@@ -1,0 +1,1 @@
+#TODO: write read data test after refactoring global_settings.py
