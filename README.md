@@ -11,6 +11,21 @@
 
 `camera_linearity` is at the moment still work-in-progress. For now the package is available only on this GitHub repository. In time my aim is that the package will be made available on PyPi for install via `pip`.
 
+## Example case
+
+Below is a series of images captured using an Olympus SC100 CMOS camera, attached to an Olympus BX53M optical microscope, at 50x magnification in dark field mode. The sixth image shows an example of the uncertainty images. The sample shows a carbon nanotube deposition, formed on a silicon chip. The input images and uncertainty images are computed as mean stacks from a video, yielding minimally noisy input images and an empirical measure of the uncertainty of the input image. The input images are regular 8-bits per channel sRGB images, while the uncertainty images are 64-bits per channel RGB images.
+
+<p align="center">
+  <img src="doc/images/Exposure_series_start_0.75x.png" />
+</p>
+
+This series of differently exposed images can be merged into a single HDR image with a solved ICRF for the camera. The resulting HDR image and its uncertainty are illustrated below via a false color image for each color channel, with the relative radiance in logarithmic scale and the associated uncertainty in linear scale. If the solved ICRF is sufficiently accurate to reality and the input images are not too noisy, the HDR merging produces quantitatively rather accurate maps of relative radiance. Such images can be used to measure and compare the relative radiance of parts of the same image and even parts of different images captured with the same camera.
+
+<p align="center">
+  <img src="doc/images/HDR_false_color.png" />
+</p>
+
+
 ## Usage
 
 `camera_linearity` provides two main classes that can be used to manage image files and to analyze the linearity. These are the `ImageSet` and `ExposureSeries` objects. `ImageSet`class further is a composite of a `Measurand` class, which implement the mathematical and statistical functionality.
