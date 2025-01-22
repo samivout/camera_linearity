@@ -10,10 +10,12 @@ and dark frames should have 'dark' in them. TODO: implement common file types.
 import cv2 as cv
 import re
 import math
+from pathlib import Path
 from typing import Optional, List, Dict, Type
 from cupyx.scipy.ndimage import median_filter
 from measurand import Measurand, AbstractMeasurand
-from global_settings import *
+from global_settings import GlobalSettings as gs
+import read_data as rd
 from cupy_wrapper import get_array_libraries
 
 np, cp, using_cupy = get_array_libraries()
@@ -90,7 +92,7 @@ class ImageSet(object):
     def get_flat_field(self, list_of_flat_fields: Optional[List['ImageSet']] = None):
 
         if list_of_flat_fields is None:
-            list_of_flat_fields = ImageSet.multiple_from_path(FLAT_PATH)
+            list_of_flat_fields = ImageSet.multiple_from_path(gs.DEFAULT_FLAT_PATH)
         for flat_set in list_of_flat_fields:
             if self.features['illumination'] == flat_set.features['illumination'] and self.features['magnification'] == \
                     flat_set.features['magnification']:
@@ -110,11 +112,11 @@ class ImageSet(object):
             A matching or scaled dark frame.
         """
         if list_of_dark_fields is None:
-            list_of_dark_fields = ImageSet.multiple_from_path(DARK_PATH)
+            list_of_dark_fields = ImageSet.multiple_from_path(gs.DEFAULT_DARK_PATH)
 
         target_exposure = self.features['exposure']
 
-        if target_exposure >= DARK_THRESHOLD:
+        if target_exposure >= gs.DARK_THRESHOLD:
             lesser_exp = False
             greater_exp = False
             greater_index = 0
@@ -166,7 +168,7 @@ class ImageSet(object):
         """
 
         if not bit64:
-            self.measurand.val = cv.imread(str(self.path)).astype(np.float64) / MAX_DN
+            self.measurand.val = cv.imread(str(self.path)).astype(np.float64) / gs.MAX_DN
         else:
             self.measurand.val = cv.imread(str(self.path), cv.IMREAD_UNCHANGED)
         number_of_dims = len(np.shape(self.measurand.val))
@@ -278,16 +280,16 @@ class ImageSet(object):
                 cv.imwrite(file_path.removesuffix('.tif') + std_file_suffix, bit64_image)
 
         else:
-            for c in range(CHANNELS):
+            for c in range(gs.NUM_OF_CHS):
 
                 bit64_image = acq[:, :, c]
                 cv.imwrite(file_path.removesuffix('.tif')
-                           + acq_file_suffix.replace('.tif', f' {CHANNEL_NAMES[c]}.tif'), bit64_image)
+                           + acq_file_suffix.replace('.tif', f' {gs.CH_NAMES[c]}.tif'), bit64_image)
 
                 if self.measurand.std is not None:
                     bit64_image = std[:, :, c]
                     cv.imwrite(file_path.removesuffix('.tif')
-                               + std_file_suffix.replace('.tif', f' {CHANNEL_NAMES[c]}.tif'), bit64_image)
+                               + std_file_suffix.replace('.tif', f' {gs.CH_NAMES[c]}.tif'), bit64_image)
 
     def save_8bit(self, save_path: Optional[Path] = None, force_8_bit: Optional[bool] = False):
         """
@@ -328,7 +330,7 @@ class ImageSet(object):
         if max_float > 1:
             bit8_image /= max_float
 
-        bit8_image = (np.around(bit8_image * MAX_DN)).astype(np.dtype('uint8'))
+        bit8_image = (np.around(bit8_image * gs.MAX_DN)).astype(np.dtype('uint8'))
         cv.imwrite(file_path, bit8_image)
 
         if save_stds is not None:
@@ -337,7 +339,7 @@ class ImageSet(object):
                 max_float = np.amax(bit8_image)
                 if max_float > 1:
                     bit8_image /= max_float
-                bit8_image = (np.around(bit8_image * MAX_DN)).astype(np.dtype('uint8'))
+                bit8_image = (np.around(bit8_image * gs.MAX_DN)).astype(np.dtype('uint8'))
             cv.imwrite(file_path.removesuffix('.tif') + ' STD.tif', bit8_image)
 
     def calculate_numerical_STD(self, STD_data: Optional[cnp.ndarray] = None):
@@ -353,14 +355,14 @@ class ImageSet(object):
         """
         if STD_data is None:
             try:
-                STD_data = rd.read_data_from_txt(STD_FILE_NAME, use_cupy=using_cupy)
+                STD_data = rd.read_data_from_txt(gs.STD_FILE_NAME, use_cupy=using_cupy)
             except FileNotFoundError:
                 print('Could not load STD data for numerical estimation.')
                 return None
 
-        acq = cnp.around(self.measurand.val * MAX_DN).astype(cnp.dtype('uint8'))
+        acq = cnp.around(self.measurand.val * gs.MAX_DN).astype(cnp.dtype('uint8'))
         STD_image = cnp.zeros_like(acq, dtype=cnp.dtype('float64'))
-        for c in range(CHANNELS):
+        for c in range(gs.NUM_OF_CHS):
             STD_image[:, :, c] = STD_data[acq[:, :, c], c]
 
         return STD_image
@@ -378,23 +380,23 @@ class ImageSet(object):
         """
 
         def filter_hot_positions(acq, dark, convolve):
-            hot_indices = dark > HOT_PIXEL_THRESHOLD
+            hot_indices = dark > gs.HOT_PIXEL_THRESHOLD
             acq[hot_indices] = convolve[hot_indices]
             return acq
 
         print(f'Bad pixel filter for image: {self.path} and dark: {darkSet.path}')
         convolved_image = cp.zeros_like(self.measurand.val, dtype=cp.dtype('float64'))
-        for c in range(CHANNELS):
+        for c in range(gs.NUM_OF_CHS):
             convolved_image[:, :, c] = median_filter(self.measurand.val[:, :, c],
-                                                     (MEDIAN_FILTER_KERNEL_SIZE, MEDIAN_FILTER_KERNEL_SIZE),
+                                                     (gs.MEDIAN_FILTER_KERNEL_SIZE, gs.MEDIAN_FILTER_KERNEL_SIZE),
                                                      mode='reflect')
 
         acq = filter_hot_positions(self.measurand.val, darkSet.measurand.val, convolved_image)
 
         if self.measurand.std is not None:
-            for c in range(CHANNELS):
+            for c in range(gs.NUM_OF_CHS):
                 convolved_image[:, :, c] = median_filter(self.measurand.std[:, :, c],
-                                                         (MEDIAN_FILTER_KERNEL_SIZE, MEDIAN_FILTER_KERNEL_SIZE),
+                                                         (gs.MEDIAN_FILTER_KERNEL_SIZE, gs.MEDIAN_FILTER_KERNEL_SIZE),
                                                          mode='reflect')
 
             self.measurand.std = filter_hot_positions(acq, darkSet.measurand.val, convolved_image)
@@ -424,9 +426,9 @@ class ImageSet(object):
             flat_field_means = []
 
             # Define ROI for calculating flat field spatial mean
-            ROI_dx = math.floor(IM_SIZE_X * FF_MID_PERCENTAGE)
-            ROI_dy = math.floor(IM_SIZE_Y * FF_MID_PERCENTAGE)
-            ROI_start_index = (math.floor(1 / FF_MID_PERCENTAGE) - 1) / 2  # Should be an odd number to center on image.
+            ROI_dx = math.floor(gs.IM_SIZE_X * gs.FF_MID_PERCENTAGE)
+            ROI_dy = math.floor(gs.IM_SIZE_Y * gs.FF_MID_PERCENTAGE)
+            ROI_start_index = (math.floor(1 / gs.FF_MID_PERCENTAGE) - 1) / 2  # Should be an odd number to center on image.
 
             # Calculate ROI bounds
             x_start, x_end = ROI_start_index * ROI_dx, (ROI_start_index + 1) * ROI_dx
@@ -554,9 +556,9 @@ def calibrate_flats():
     Function to calibrate flat frames, i.e. bias subtraction.
     :return:
     """
-    list_of_original_dark_frames = ImageSet.multiple_from_path(DARK_PATH)
+    list_of_original_dark_frames = ImageSet.multiple_from_path(gs.DEFAULT_DARK_PATH)
     list_of_original_dark_frames.sort(key=lambda image_set: image_set.features['exposure'])
-    list_of_original_flat_fields = ImageSet.multiple_from_path(OG_FLAT_PATH)
+    list_of_original_flat_fields = ImageSet.multiple_from_path(gs.UNCALIBRATED_FLAT_PATH)
 
     bias = list_of_original_dark_frames[0]
     bias.load_value_image()
@@ -566,7 +568,7 @@ def calibrate_flats():
         flat_field.load_value_image()
         flat_field.load_std_image()
         flat_field.measurand = flat_field.measurand - bias.measurand
-        flat_field.save_8bit(FLAT_PATH)
+        flat_field.save_8bit(gs.DEFAULT_FLAT_PATH)
 
 
 def calibrate_dark_frames():
@@ -574,7 +576,7 @@ def calibrate_dark_frames():
     Function that handles calibration of raw dark frames, i.e. bias subtraction.
     :return:
     """
-    list_of_original_dark_frames = ImageSet.multiple_from_path(OG_DARK_PATH)
+    list_of_original_dark_frames = ImageSet.multiple_from_path(gs.UNCALIBRATED_DARK_PATH)
     list_of_original_dark_frames.sort(key=lambda image_set: image_set.features['exposure'])
     bias = list_of_original_dark_frames[0]
     bias.load_value_image()
@@ -584,7 +586,7 @@ def calibrate_dark_frames():
         dark_frame.load_value_image()
         dark_frame.load_std_image()
         dark_frame.measurand = dark_frame.measurand - bias.measurand
-        dark_frame.save_8bit(DARK_PATH)
+        dark_frame.save_8bit(gs.DEFAULT_DARK_PATH)
 
 
 def _features_from_file_name(file_path: Path):

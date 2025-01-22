@@ -3,13 +3,15 @@ Module for solving the inverse camera response function. The solving is based on
 the differential evolution solver of SciPy. The energy function being evaluated measures the linearity of the pixel
 values at the same position in a stack of images captured at different exposure times.
 """
+from pathlib import Path
 from scipy.optimize._differentialevolution import DifferentialEvolutionSolver # Accessed to enable manual interrupt.
 from image_set import ImageSet
 from exposure_series import ExposureSeries
 import general_functions as gf
 from typing import Optional
 from joblib import delayed, parallel
-from global_settings import *
+from global_settings import GlobalSettings as gs
+import read_data as rd
 
 from cupy_wrapper import get_array_libraries
 
@@ -34,7 +36,7 @@ def _inverse_camera_response_function(mean_ICRF, PCA_array, PCA_params, use_mean
     if isinstance(PCA_params, np.ndarray):
         temp = cnp.asarray(PCA_params)
     if not use_mean_ICRF:
-        mean_ICRF = cnp.linspace(0, 1, BITS) ** temp[0]
+        mean_ICRF = cnp.linspace(0, 1, gs.BITS) ** temp[0]
         product = cnp.matmul(PCA_array, temp[1:])
     else:
         product = cnp.matmul(PCA_array, temp)
@@ -167,7 +169,7 @@ def _energy_function(PCA_params, mean_ICRF, PCA_array, image_value_stack, image_
     ICRF_ch[0] = 0
 
     if use_std:
-        dx = 2 / (BITS - 1)
+        dx = 2 / (gs.BITS - 1)
         ICRF_diff_ch = cnp.gradient(ICRF_ch, dx)
 
     if cnp.max(ICRF_ch) > 1 or cnp.min(ICRF_ch) < 0:
@@ -212,8 +214,8 @@ def _initial_energy_function(x, list_of_exposure_series, channel, lower, upper):
     Returns:
 
     """
-    initial_function = cnp.linspace(0, 1, BITS) ** x
-    dx = 2 / (BITS - 1)
+    initial_function = cnp.linspace(0, 1, gs.BITS) ** x
+    dx = 2 / (gs.BITS - 1)
     initial_function_diff = cnp.gradient(initial_function, dx)
 
     list_of_single_channel_exposure_series = []
@@ -232,14 +234,14 @@ def _initial_energy_function(x, list_of_exposure_series, channel, lower, upper):
 
 
 def interpolate_ICRF(ICRF_array):
-    if BITS == DATAPOINTS:
+    if gs.BITS == gs.DATAPOINTS:
         return ICRF_array
 
-    x_new = cnp.linspace(0, 1, num=BITS)
-    x_old = cnp.linspace(0, 1, num=DATAPOINTS)
-    interpolated_ICRF = cnp.zeros((BITS, CHANNELS), dtype=float)
+    x_new = cnp.linspace(0, 1, num=gs.BITS)
+    x_old = cnp.linspace(0, 1, num=gs.DATAPOINTS)
+    interpolated_ICRF = cnp.zeros((gs.BITS, gs.NUM_OF_CHS), dtype=float)
 
-    for c in range(CHANNELS):
+    for c in range(gs.NUM_OF_CHS):
         y_old = ICRF_array[:, c]
         interpolated_ICRF[:, c] = cnp.interp(x_new, x_old, y_old)
 
@@ -320,7 +322,7 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
                 data_spacing: Optional[int | tuple[int, int]] = 150,
                 data_limits: Optional[tuple[int, int]] = (5, 250),
                 use_std: Optional[bool] = False,
-                image_path: Optional[Path] = ACQ_PATH,
+                image_path: Optional[Path] = gs.DEFAULT_IMG_SRC_PATH,
                 energy_limit: Optional[float] = 0,
                 rng_seed: Optional[int] = 7):
     """ The main function running the ICRF calibration process that is called
@@ -342,9 +344,9 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
             initial_energy_array: a Numpy float array containing the initial energies of each channel.
             final_energy_array: a Numpy float array containing the final energies of each channel.
        """
-    ICRF = cp.zeros((DATAPOINTS, CHANNELS), dtype=float)
-    final_energy_array = cp.zeros(CHANNELS, dtype=float)
-    initial_energy_array = cp.zeros(CHANNELS, dtype=float)
+    ICRF = cp.zeros((gs.DATAPOINTS, gs.NUM_OF_CHS), dtype=float)
+    final_energy_array = cp.zeros(gs.NUM_OF_CHS, dtype=float)
+    initial_energy_array = cp.zeros(gs.NUM_OF_CHS, dtype=float)
 
     limits = []
     x0 = []
@@ -355,7 +357,7 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
         limits.append([1, 8])  # which is the exponent of a general exponential a^x. These additions
         x0.append(3)  # to the limits and x0 lists correspond to the additional parameter.
 
-    for i in range(NUM_OF_PCA_PARAMS):
+    for i in range(gs.NUM_OF_PCA_PARAMS):
         limits.append([lower_PCA_limit, upper_PCA_limit])
         x0.append(0)
 
@@ -401,15 +403,15 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
 
         return return_array
 
-    seeds = [rng_seed + c for c in range(CHANNELS)]
+    seeds = [rng_seed + c for c in range(gs.NUM_OF_CHS)]
 
     # Parallelize the solving of the channels.
-    results = parallel.Parallel(n_jobs=CHANNELS)(
-        delayed(solve_channel)(PCA_FILES[c], MEAN_ICRF_FILES[c], c, seeds[c],
+    results = parallel.Parallel(n_jobs=gs.NUM_OF_CHS)(
+        delayed(solve_channel)(gs.PCA_FILES[c], gs.MEAN_ICRF_FILES[c], c, seeds[c],
                                channel_image_value_stacks[c], channel_image_std_stacks[c], exposure_values)
-        for c in range(CHANNELS))
+        for c in range(gs.NUM_OF_CHS))
 
-    for c in range(CHANNELS):
+    for c in range(gs.NUM_OF_CHS):
         ICRF[:, c] = results[c]
         ICRF[:, c] += 1 - ICRF[-1, c]  # The ICRF might be shifted on the y-axis, so we adjust it back to [0,1] here.
         ICRF[0, c] = 0

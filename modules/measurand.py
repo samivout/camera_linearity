@@ -14,7 +14,7 @@ from cupy_wrapper import get_array_libraries
 from typing import Optional
 from typing import Union
 from typing import List
-from global_settings import *
+from global_settings import GlobalSettings as gs
 from scipy.stats import gaussian_kde
 
 np, cp, using_cupy = get_array_libraries()
@@ -433,7 +433,7 @@ class Measurand(AbstractMeasurand):
             Dictionary containing a (histogram values, bin edges) tuple for each channel index acting as the key value.
         """
         if channels is None:
-            channels = [c for c in range(CHANNELS)]
+            channels = [c for c in range(gs.NUM_OF_CHS)]
 
         histograms = {}
 
@@ -473,7 +473,7 @@ class Measurand(AbstractMeasurand):
             A dictionary containing the KDE as a (result, range) tuple, with the channel index acting as a key.
         """
         if channels is None:
-            channels = [c for c in range(CHANNELS)]
+            channels = [c for c in range(gs.NUM_OF_CHS)]
 
         estimates = {}
 
@@ -543,7 +543,7 @@ class Measurand(AbstractMeasurand):
             use_std = True
 
         if not cnp.issubdtype(self.val.dtype, cnp.integer):
-            integer_values = cnp.around(self.val * MAX_DN).astype(cnp.dtype('uint8'))
+            integer_values = cnp.around(self.val * gs.MAX_DN).astype(cnp.dtype('uint8'))
         else:
             integer_values = self.val.copy()
 
@@ -571,7 +571,7 @@ class Measurand(AbstractMeasurand):
             use_std = True
 
         if not cnp.issubdtype(self.val.dtype, cnp.integer):
-            integer_values = cnp.around(self.val * MAX_DN).astype(cnp.dtype('uint8'))
+            integer_values = cnp.around(self.val * gs.MAX_DN).astype(cnp.dtype('uint8'))
         else:
             integer_values = self.val.copy()
         result = ICRF[integer_values]

@@ -1,10 +1,11 @@
 """
 Module for various functions that can be or are used in multiple places.
 """
+from pathlib import Path
 from typing import Optional
 from scipy.interpolate import interp1d
 import cv2 as cv
-from global_settings import *
+from global_settings import GlobalSettings as gs
 import math
 
 from cupy_wrapper import get_array_libraries
@@ -79,18 +80,18 @@ def interpolate_data(clean_data_arr: np.ndarray):
     Returns:
         The interpolated data array.
     """
-    if BITS == DATAPOINTS:
+    if gs.BITS == gs.DATAPOINTS:
         return clean_data_arr
 
-    interpolated_data = np.zeros((BITS, DATAPOINTS), dtype=float)
+    interpolated_data = np.zeros((gs.BITS, gs.DATAPOINTS), dtype=float)
 
-    for i in range(BITS):
-        x = np.linspace(0, 1, num=BITS)
+    for i in range(gs.BITS):
+        x = np.linspace(0, 1, num=gs.BITS)
         y = clean_data_arr[i, :]
 
         f = interp1d(x, y)
 
-        x_new = np.linspace(0, 1, num=DATAPOINTS)
+        x_new = np.linspace(0, 1, num=gs.DATAPOINTS)
         interpolated_data[i, :] = f(x_new)
 
     return interpolated_data
@@ -109,20 +110,20 @@ def map_linearity_limits(lower_limit: Optional[int], upper_limit: Optional[int],
         The mapped lower and upper limits.
     """
     if lower_limit is None:
-        lower = cp.array([LOWER_LIN_LIM] * CHANNELS, dtype="float64")
+        lower = cp.array([gs.LOWER_LIN_LIM] * gs.NUM_OF_CHS, dtype="float64")
     else:
-        lower = cp.array([lower_limit] * CHANNELS, dtype="float64")
+        lower = cp.array([lower_limit] * gs.NUM_OF_CHS, dtype="float64")
 
     if upper_limit is None:
-        upper = cp.array([UPPER_LIN_LIM] * CHANNELS, dtype="float64")
+        upper = cp.array([gs.UPPER_LIN_LIM] * gs.NUM_OF_CHS, dtype="float64")
     else:
-        upper = cp.array([MAX_DN - upper_limit] * CHANNELS, dtype="float64")
+        upper = cp.array([gs.MAX_DN - upper_limit] * gs.NUM_OF_CHS, dtype="float64")
 
     if ICRF is None:
-        lower /= MAX_DN
-        upper /= MAX_DN
+        lower /= gs.MAX_DN
+        upper /= gs.MAX_DN
     else:
-        for c in range(CHANNELS):
+        for c in range(gs.NUM_OF_CHS):
             lower[c] = ICRF[int(lower[c]), c]
             upper[c] = ICRF[int(upper[c]), c]
 
