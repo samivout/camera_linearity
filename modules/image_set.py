@@ -11,31 +11,43 @@ import cv2 as cv
 import re
 import math
 from pathlib import Path
-from typing import Optional, List, Dict, Type
+from typing import Optional, List, Dict, Union
 from cupyx.scipy.ndimage import median_filter
-from measurand import Measurand, AbstractMeasurand
+from measurand import Measurand, NumPyMeasurand
 from global_settings import GlobalSettings as gs
 import read_data as rd
 from cupy_wrapper import get_array_libraries
 
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+np, cp, cupy_available = get_array_libraries()
+cnp = cp if cupy_available else np
 
 
 class ImageSet(object):
 
     def __init__(self, file_path: Optional[str | Path] = None, value: Optional[cnp.ndarray] = None,
                  std: Optional[cnp.ndarray] = None, features: Optional[Dict] = None,
-                 measurand: Optional[Type[AbstractMeasurand]] = None, channels: Optional[List[int]] = None):
+                 measurand: Optional[Union[Measurand, NumPyMeasurand]] = None, channels: Optional[List[int]] = None,
+                 use_cupy: Optional[bool] = True):
 
         if isinstance(file_path, str):
             self.path = Path(file_path)
         else:
             self.path = file_path
+
         if measurand is not None:
-            self.measurand = measurand
+            self._measurand = measurand
+            if isinstance(measurand, NumPyMeasurand):
+                self._use_cupy = False
+            elif isinstance(measurand, Measurand):
+                self._use_cupy = True
         else:
-            self.measurand = Measurand(value, std)
+            if use_cupy and cupy_available:
+                self._measurand = Measurand(value, std)
+                self._use_cupy = True
+            else:
+                self._measurand = NumPyMeasurand(value, std)
+                self._use_cupy = False
+
         if features is not None:
             self.features = features
         elif file_path is not None:
@@ -44,6 +56,39 @@ class ImageSet(object):
             self.features = None
         self.channels = channels
         self.is_HDR = False
+
+    @property
+    def measurand(self):
+        return self._measurand
+
+    @measurand.setter
+    def measurand(self, new_measurand):
+
+        if self._use_cupy:
+            expected_type = Measurand
+        else:
+            expected_type = NumPyMeasurand
+
+        if isinstance(new_measurand, expected_type):
+            self._measurand = new_measurand
+        else:
+            raise ValueError(f'Expected type {expected_type}, got {type(new_measurand)} instead.')
+
+    def to_numpy(self):
+        """
+        Convert this ImageSet to use NumPy.
+        """
+        if isinstance(self.measurand, Measurand):
+            self._use_cupy = False
+            self._measurand = self._measurand.to_numpy()
+
+    def to_cupy(self):
+        """
+        Convert this ImageSet to use CuPy
+        """
+        if isinstance(self.measurand, NumPyMeasurand):
+            self._use_cupy = True
+            self._measurand = self._measurand.to_cupy()
 
     def linearize(self, ICRF: cnp.ndarray, ICRF_diff: Optional[cnp.ndarray] = None):
         """
@@ -157,30 +202,29 @@ class ImageSet(object):
 
         return ImageSet(file_path=self.path, features=self.features, measurand=new_measurand, channels=channels)
 
-    def load_value_image(self, bit64: Optional[bool] = False, use_cupy: Optional[bool] = True):
+    def load_value_image(self, bit64: Optional[bool] = False):
         """
         Load the acquired image of the ImageSet object into memory. You can specify whether to load it as an 8-bits per
         channel image or a 64-bit float per channel image.
 
         Args:
             bit64: whether the image should be in 64-bit float form or not.
-            use_cupy: whether to use CuPy or NumPy arrays.
         """
 
         if not bit64:
-            self.measurand.val = cv.imread(str(self.path)).astype(np.float64) / gs.MAX_DN
+            value = cv.imread(str(self.path)).astype(np.float64) / gs.MAX_DN
         else:
-            self.measurand.val = cv.imread(str(self.path), cv.IMREAD_UNCHANGED)
-        number_of_dims = len(np.shape(self.measurand.val))
+            value = cv.imread(str(self.path), cv.IMREAD_UNCHANGED)
+        number_of_dims = len(np.shape(value))
         self.channels = list(np.arange(0, number_of_dims, step=1))
-        if use_cupy and using_cupy:
-            self.measurand.val = cp.asarray(self.measurand.val)
+        if self._use_cupy:
+            self.measurand.val = cp.asarray(value)
             self.channels = cp.asarray(self.channels)
 
     def single_channel_to_multiple(self):
 
         value_image = cv.imread(str(self.path), cv.IMREAD_UNCHANGED).astype(np.float64)
-        if using_cupy:
+        if self._use_cupy:
             value_image = cp.array(value_image)
 
         number_of_dims = len(cnp.shape(value_image))
@@ -192,14 +236,12 @@ class ImageSet(object):
             self.measurand.val = cnp.concatenate((value_image, value_image, value_image), axis=2)
         self.channels = [0, 1, 2]
 
-    def load_std_image(self, STD_data: Optional[np.ndarray] = None, bit64: Optional[bool] = False,
-                       use_cupy: Optional[bool] = True):
+    def load_std_image(self, STD_data: Optional[np.ndarray] = None, bit64: Optional[bool] = False):
         """
         Loads the error image of an ImageSet object to memory.
         Args:
             bit64: whether the image to load is already in float or not
             STD_data: Numpy array representing the STD data of pixel values.
-            use_cupy: whether to use CuPy or NumPy arrays.
         """
         std_path = str(self.path).removesuffix('.tif') + ' STD.tif'
         std_array = cv.imread(std_path, cv.IMREAD_UNCHANGED)
@@ -209,7 +251,7 @@ class ImageSet(object):
         if std_array is None:
             return
 
-        if use_cupy and using_cupy:
+        if self._use_cupy:
             std_array = cp.asarray(std_array)
 
         self.measurand.std = std_array
@@ -355,17 +397,14 @@ class ImageSet(object):
         """
         if STD_data is None:
             try:
-                STD_data = rd.read_data_from_txt(gs.STD_FILE_NAME, use_cupy=using_cupy)
+                STD_data = rd.read_txt_to_array(gs.STD_FILE_NAME, use_cupy=self._use_cupy)
             except FileNotFoundError:
                 print('Could not load STD data for numerical estimation.')
                 return None
 
-        acq = cnp.around(self.measurand.val * gs.MAX_DN).astype(cnp.dtype('uint8'))
-        STD_image = cnp.zeros_like(acq, dtype=cnp.dtype('float64'))
-        for c in range(gs.NUM_OF_CHS):
-            STD_image[:, :, c] = STD_data[acq[:, :, c], c]
+        numerical_measurand = self.measurand.linearize(ICRF=STD_data)
 
-        return STD_image
+        return numerical_measurand.val
 
     def bad_pixel_filter(self: 'ImageSet', darkSet: 'ImageSet'):
         """
@@ -428,7 +467,8 @@ class ImageSet(object):
             # Define ROI for calculating flat field spatial mean
             ROI_dx = math.floor(gs.IM_SIZE_X * gs.FF_MID_PERCENTAGE)
             ROI_dy = math.floor(gs.IM_SIZE_Y * gs.FF_MID_PERCENTAGE)
-            ROI_start_index = (math.floor(1 / gs.FF_MID_PERCENTAGE) - 1) / 2  # Should be an odd number to center on image.
+            ROI_start_index = (math.floor(
+                1 / gs.FF_MID_PERCENTAGE) - 1) / 2  # Should be an odd number to center on image.
 
             # Calculate ROI bounds
             x_start, x_end = ROI_start_index * ROI_dx, (ROI_start_index + 1) * ROI_dx
