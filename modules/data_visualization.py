@@ -122,7 +122,7 @@ def print_mean_data_mode(mean_data_array):
 def plot_PCA():
     for i, file in enumerate(gs.PCA_FILES):
 
-        PCA_array = rd.read_data_from_txt(file)
+        PCA_array = rd.read_txt_to_array(file)
         image_name = str(file)
         image_name = image_name.replace('.txt', '.png')
         datapoints, components = np.shape(PCA_array)
@@ -136,7 +136,7 @@ def plot_PCA():
 
 
 def plot_dorf_PCA():
-    data_array = rd.read_data_from_txt('dorf_PCA.txt')
+    data_array = rd.read_txt_to_array('dorf_PCA.txt')
     x_range = data_array[:, 0]
 
     for i in range(2, 7):
@@ -174,7 +174,7 @@ def plot_ICRF_PCA():
 
         initial_function = x_range ** 4
         PCA_file_name = gs.PCA_FILES[i]
-        PCA_array = rd.read_data_from_txt(PCA_file_name)
+        PCA_array = rd.read_txt_to_array(PCA_file_name)
 
         product = np.matmul(PCA_array, PCA_Components[i])
         iterated_ICRF = initial_function + product
@@ -201,10 +201,10 @@ def mean_data_plot():
         mean_file_name = gs.MEAN_DATA_FILES[i]
         mean_ICRF_file_name = gs.MEAN_ICRF_FILES[i]
 
-        mean_data_array[:, :, i] = rd.read_data_from_txt(mean_file_name)
-        mean_ICRF_array[:, i] = rd.read_data_from_txt(mean_ICRF_file_name)
+        mean_data_array[:, :, i] = rd.read_txt_to_array(mean_file_name)
+        mean_ICRF_array[:, i] = rd.read_txt_to_array(mean_ICRF_file_name)
 
-    ICRF_calibrated = rd.read_data_from_txt(gs.ICRF_CALIBRATED_FILE)
+    ICRF_calibrated = rd.read_txt_to_array(gs.ICRF_CALIBRATED_FILE)
     ICRF_diff = np.zeros_like(ICRF_calibrated)
 
     for c in range(gs.NUM_OF_CHS):
@@ -236,7 +236,7 @@ def calculate_and_plot_mean_ICRF(filepath: Optional[Path] = None):
 
     path = filepath.parent
     name = filepath.name.replace('.txt', 'png')
-    ICRF = rd.read_data_from_txt(filepath, str(filepath.parent))
+    ICRF = rd.read_txt_to_array(filepath, str(filepath.parent))
 
     mean_ICRF = np.mean(ICRF, axis=1)
     np.savetxt(path.joinpath('mean_ICRF.txt'), mean_ICRF)
@@ -259,8 +259,8 @@ def calculate_mean_ICRF(filepath_1: Optional[Path] = None,
     if filepath_2 is None:
         filepath_2 = gf.get_filepath_dialog('Choose ICRF file')
 
-    ICRF_1 = rd.read_data_from_txt(filepath_1, str(filepath_1.parent))
-    ICRF_2 = rd.read_data_from_txt(filepath_1, str(filepath_2.parent))
+    ICRF_1 = rd.read_txt_to_array(filepath_1, str(filepath_1.parent))
+    ICRF_2 = rd.read_txt_to_array(filepath_1, str(filepath_2.parent))
 
     ICRF_mean = (ICRF_1 + ICRF_2) / 2
 
@@ -280,8 +280,8 @@ def plot_two_ICRF_and_calculate_RMSE(filepath1: Optional[Path] = None,
     path = filepath2.parent
     name = 'ICRF_RMSE.png'
 
-    ICRF1 = rd.read_data_from_txt(filepath1, str(filepath1.parent))
-    ICRF2 = rd.read_data_from_txt(filepath2, str(filepath2.parent))
+    ICRF1 = rd.read_txt_to_array(filepath1, str(filepath1.parent))
+    ICRF2 = rd.read_txt_to_array(filepath2, str(filepath2.parent))
 
     RMSE = np.sqrt(np.mean((ICRF1 - ICRF2) ** 2))
 
@@ -304,7 +304,7 @@ def smoothen_ICRF(ICRF_path: Optional[Path] = None):
     if ICRF_path is None:
         ICRF_path = gf.get_filepath_dialog('Choose ICRF file')
 
-    ICRF = rd.read_data_from_txt(ICRF_path.name, ICRF_path.parent)
+    ICRF = rd.read_txt_to_array(ICRF_path.name, ICRF_path.parent)
     ICRF_smoothed = np.zeros_like(ICRF)
     ICRF_smoothed_diff = np.zeros_like(ICRF)
 

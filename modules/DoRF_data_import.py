@@ -194,8 +194,8 @@ def analyze_principal_components():
     for i in range(len(gs.ICRF_FILES)):
         file_name = gs.ICRF_FILES[i]
         mean_file_name = gs.MEAN_ICRF_FILES[i]
-        ICRF_array = rd.read_data_from_txt(file_name, use_cupy=True)
-        mean_ICRF_array = rd.read_data_from_txt(mean_file_name, use_cupy=True)
+        ICRF_array = rd.read_txt_to_array(file_name, use_cupy=True)
+        mean_ICRF_array = rd.read_txt_to_array(mean_file_name, use_cupy=True)
 
         covariance_matrix = _calculate_covariance_matrix(ICRF_array,
                                                          mean_ICRF_array)

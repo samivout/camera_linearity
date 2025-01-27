@@ -73,7 +73,7 @@ def read_config_single(key):
     return single_item
 
 
-def read_data_from_txt(file_name: str, path: Optional[str] = None, use_cupy: Optional[bool] = True):
+def read_txt_to_array(file_name: str, path: Optional[str] = None, use_cupy: Optional[bool] = True):
     """
     Load numerical data from a .txt file of given name. Defaults to data
     directory but optionally can use other paths.
@@ -81,6 +81,7 @@ def read_data_from_txt(file_name: str, path: Optional[str] = None, use_cupy: Opt
     Args:
         file_name: name of the file to load.
         path: path to the file, optional.
+        use_cupy: whether to load data into a CuPy or NumPy array.
 
     Returns: numpy array of the txt file.
     """
