@@ -3,12 +3,14 @@ Module containing the ExposureSeries and ExposurePair classes. These implement t
 linearity of a stack of images captured at different exposure times. Also implements the functionality to merge the
 stack into an HDR image.
 """
+from pathlib import Path
 import general_functions as gf
+import read_data as rd
 from image_set import ImageSet
 from typing import Optional
 from typing import List
 from typing import Dict
-from global_settings import *
+from global_settings import GlobalSettings as gs
 
 from cupy_wrapper import get_array_libraries
 
@@ -218,8 +220,8 @@ class ExposureSeries(object):
         operation constructs a new ExposureSeries object. release_memory argument can be used to dynamically release
         memory by deleting the value and std images of the source ExposureSet's input ImageSets as they are linearized.
         Args:
-            ICRF: the inverse camera response function as an array, shape (BITS, CHANNELS)
-            ICRF_diff: the derivateive of the ICRF, shape (BITS, CHANNELS)
+            ICRF: the inverse camera response function as an array, shape (gs.BITS, gs.NUM_OF_CHS)
+            ICRF_diff: the derivateive of the ICRF, shape (gs.BITS, gs.NUM_OF_CHS)
             release_memory: whether to delete the value and std images of the source ImageSets to release memory.
 
         Returns:
@@ -313,7 +315,7 @@ class ExposureSeries(object):
         Returns:
             A sum of weights array and its element-wise square.
         """
-        sum_of_weights = cnp.zeros((IM_SIZE_Y, IM_SIZE_X, CHANNELS), dtype=(cnp.dtype('float64')))
+        sum_of_weights = cnp.zeros((gs.IM_SIZE_Y, gs.IM_SIZE_X, gs.NUM_OF_CHS), dtype=(cnp.dtype('float64')))
 
         image_set: ImageSet
         for image_set in self.input_image_sets:
@@ -346,8 +348,8 @@ class ExposureSeries(object):
         Returns:
             The merged HDR image as an ImageSet object.
         """
-        HDR_arr = cnp.zeros((IM_SIZE_Y, IM_SIZE_X, CHANNELS), dtype=cnp.dtype('float64'))
-        HDR_std = cnp.zeros((IM_SIZE_Y, IM_SIZE_X, CHANNELS), dtype=cnp.dtype('float64'))
+        HDR_arr = cnp.zeros((gs.IM_SIZE_Y, gs.IM_SIZE_X, gs.NUM_OF_CHS), dtype=cnp.dtype('float64'))
+        HDR_std = cnp.zeros((gs.IM_SIZE_Y, gs.IM_SIZE_X, gs.NUM_OF_CHS), dtype=cnp.dtype('float64'))
         image_set_HDR_path = self.input_image_sets[0].get_file_path_without_exposure()
 
         image_set: ImageSet
@@ -387,14 +389,14 @@ class ExposureSeries(object):
             ICRF: The utilized ICRF. If no ICRF is given, the default ICRF is loaded instead.
         """
         if ICRF is None:
-            ICRF = rd.read_data_from_txt(ICRF_CALIBRATED_FILE)
+            ICRF = rd.read_data_from_txt(gs.ICRF_CALIBRATED_FILE)
 
         ICRF_diff = cp.zeros_like(ICRF)
-        dx = 2 / (BITS - 1)
-        for c in range(CHANNELS):
+        dx = 2 / (gs.BITS - 1)
+        for c in range(gs.NUM_OF_CHS):
             ICRF_diff[:, c] = cnp.gradient(ICRF[:, c], dx)
 
-        dark_list = ImageSet.multiple_from_path(DARK_PATH)
+        dark_list = ImageSet.multiple_from_path(gs.DEFAULT_DARK_PATH)
 
         sum_of_weights, square_sum_of_weights = self._precalculate_sum_of_weights(dark_list)
         HDR_imageSet = self._compute_HDR_image_set(dark_list, sum_of_weights, square_sum_of_weights,

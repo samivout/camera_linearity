@@ -5,7 +5,7 @@ import numpy as np
 import cv2 as cv
 import general_functions as gf
 from typing import Optional, List, Union
-from global_settings import *
+from global_settings import GlobalSettings as gs
 
 
 def clean_data_edges(base_data_arr: np.ndarray):
@@ -21,7 +21,7 @@ def clean_data_edges(base_data_arr: np.ndarray):
         Array containing the cleaned noise distributions.
     """
 
-    for i in range(BITS):
+    for i in range(gs.BITS):
         dist = base_data_arr[i, :]
 
         # Center index for processing
@@ -29,7 +29,7 @@ def clean_data_edges(base_data_arr: np.ndarray):
 
         # --- Smooth from center towards the minimum edge ---
         m = center - 1
-        while m > MIN_DN:
+        while m > gs.MIN_DN:
             if dist[m] == 0 and dist[m - 1] == 0:
                 dist[:m] = 0
                 break
@@ -39,7 +39,7 @@ def clean_data_edges(base_data_arr: np.ndarray):
 
         # --- Smooth from center towards the maximum edge ---
         m = center + 1
-        while m < MAX_DN:
+        while m < gs.MAX_DN:
             if dist[m] == 0 and dist[m + 1] == 0:
                 dist[m:] = 0
                 break
@@ -48,7 +48,7 @@ def clean_data_edges(base_data_arr: np.ndarray):
             m += 1
 
         # --- Ensure monotonicity from minimum edge to center ---
-        m = MIN_DN + 1
+        m = gs.MIN_DN + 1
         while m < center:
             if dist[m] == 0 and dist[m - 1] != 0 and dist[m + 1] != 0:
                 dist[m] = dist[m - 1]  # Fill gaps with previous value
@@ -58,7 +58,7 @@ def clean_data_edges(base_data_arr: np.ndarray):
             m += 1
 
         # --- Ensure monotonicity from maximum edge to center ---
-        m = MAX_DN - 1
+        m = gs.MAX_DN - 1
         while m > center:
             if dist[m] == 0 and dist[m - 1] != 0 and dist[m + 1] != 0:
                 dist[m] = dist[m + 1]  # Fill gaps with next value
@@ -81,9 +81,9 @@ def compute_noise_profiles(video_files: List[Path]):
         video_files: path to the video files to utilize in the computation.
 
     Returns:
-        Noise profiles as NumPy array, shape (BITS, BITS, CHANNELS), and mean frame of the videos.
+        Noise profiles as NumPy array, shape (gs.BITS, gs.BITS, gs.NUM_OF_CHS), and mean frame of the videos.
     """
-    noise_profiles = np.zeros((BITS, BITS, CHANNELS), dtype=int)
+    noise_profiles = np.zeros((gs.BITS, gs.BITS, gs.NUM_OF_CHS), dtype=int)
 
     mean_frame = welford_algorithm(video_files, None, False)['mean']
 
@@ -95,7 +95,7 @@ def compute_noise_profiles(video_files: List[Path]):
             if frame is None:
                 break
 
-            for c in range(CHANNELS):
+            for c in range(gs.NUM_OF_CHS):
 
                 frame_channel = frame[..., c].flatten()
                 mean_channel = mean_frame[..., c].flatten()
@@ -109,16 +109,16 @@ def _calculate_STD(mean_data_array: np.ndarray):
     """
     Function for computing the expected standard deviation for each signal level based on the mean data.
     Args:
-        mean_data_array: NumPy array containing the mean data in shape (BITS, BITS)
+        mean_data_array: NumPy array containing the mean data in shape (gs.BITS, gs.BITS)
 
     Returns:
-        NumPy array in shape in shape (BITS,) containing the standard deviation of each signal level.
+        NumPy array in shape in shape (gs.BITS,) containing the standard deviation of each signal level.
     """
-    STD_array = np.zeros(MAX_DN + 1, dtype=float)
+    STD_array = np.zeros(gs.MAX_DN + 1, dtype=float)
 
-    for i in range(MAX_DN + 1):
+    for i in range(gs.MAX_DN + 1):
 
-        bin_edges = np.linspace(0, 1, num=DATAPOINTS, dtype=float)
+        bin_edges = np.linspace(0, 1, num=gs.DATAPOINTS, dtype=float)
         hist = mean_data_array[i, :]
         nonzeros = np.nonzero(hist)
         hist = hist[nonzeros]
@@ -139,17 +139,17 @@ def process_STD_data(pass_result: Optional[bool] = True):
         pass_result: whether to return the result or not.
 
     Returns:
-        Conditionally returns the STD data array, shape (BITS, BITS, CHANNELS).
+        Conditionally returns the STD data array, shape (gs.BITS, gs.BITS, gs.NUM_OF_CHS).
     """
-    mean_data_array = np.zeros((MAX_DN + 1, DATAPOINTS, CHANNELS), dtype=int)
-    STD_data = np.zeros((MAX_DN + 1, CHANNELS), dtype=float)
-    for i in range(len(MEAN_DATA_FILES)):
+    mean_data_array = np.zeros((gs.MAX_DN + 1, gs.DATAPOINTS, gs.NUM_OF_CHS), dtype=int)
+    STD_data = np.zeros((gs.MAX_DN + 1, gs.NUM_OF_CHS), dtype=float)
+    for i in range(len(gs.MEAN_DATA_FILES)):
 
-        mean_file_name = MEAN_DATA_FILES[i]
+        mean_file_name = gs.MEAN_DATA_FILES[i]
         mean_data_array[:, :, i] = rd.read_data_from_txt(mean_file_name)
         STD_data[:, i] = _calculate_STD(mean_data_array[:, :, i])
 
-    np.savetxt(data_directory.joinpath(STD_FILE_NAME), STD_data)
+    np.savetxt(data_directory.joinpath(gs.STD_FILE_NAME), STD_data)
 
     if pass_result:
         return STD_data
@@ -165,7 +165,7 @@ def welford_algorithm(file_paths: Union[Path, List[Path]], ICRF: Optional[np.nda
     and standard deviation frame.
     Args:
         file_paths: path to the video file or directory containing video fiels.
-        ICRF: The inverse camera response function as NumPy array, should be shaped as (BITS, CHANNELS) and match the
+        ICRF: The inverse camera response function as NumPy array, should be shaped as (gs.BITS, gs.NUM_OF_CHS) and match the
             bitdepth and number of channels of the video.
         use_std:
             Whether to calculate the standard deviation or not.
@@ -179,10 +179,10 @@ def welford_algorithm(file_paths: Union[Path, List[Path]], ICRF: Optional[np.nda
     video_width = int(video.get(cv.CAP_PROP_FRAME_WIDTH))
     video_height = int(video.get(cv.CAP_PROP_FRAME_HEIGHT))
 
-    mean = np.zeros((video_height, video_width, CHANNELS), dtype=np.dtype('float64'))
+    mean = np.zeros((video_height, video_width, gs.NUM_OF_CHS), dtype=np.dtype('float64'))
     m2 = None
     if use_std:
-        m2 = np.zeros((video_height, video_width, CHANNELS), dtype=np.dtype('float64'))
+        m2 = np.zeros((video_height, video_width, gs.NUM_OF_CHS), dtype=np.dtype('float64'))
 
     total_frame_count = 0
     for file_path in file_paths:
@@ -197,16 +197,16 @@ def welford_algorithm(file_paths: Union[Path, List[Path]], ICRF: Optional[np.nda
             total_frame_count += 1
 
             if ICRF:
-                frame = ICRF[frame, np.arange(CHANNELS)]
+                frame = ICRF[frame, np.arange(gs.NUM_OF_CHS)]
             else:
-                frame = (frame/MAX_DN).astype(np.dtype('float64'))
+                frame = (frame/gs.MAX_DN).astype(np.dtype('float64'))
 
             delta = frame - mean
             mean = mean + delta / total_frame_count
             if use_std:
                 m2 = m2 + delta * (frame - mean)
 
-    mean = mean * MAX_DN
+    mean = mean * gs.MAX_DN
     mean = (np.around(mean)).astype(np.dtype('uint8'))
 
     if use_std:
@@ -223,7 +223,7 @@ def process_video(video_path: Path, ICRF: Optional[np.ndarray] = None, use_std: 
     Function for managing the process of computing a mean and std frame of a single video file.
     Args:
         video_path: path to a single video file.
-        ICRF: Inverse camera reseponse function as NumPy array, with shape (BITS, CHANNELS) that match the video.
+        ICRF: Inverse camera reseponse function as NumPy array, with shape (gs.BITS, gs.NUM_OF_CHS) that match the video.
         use_std: whether to compute standard deviation frame or not.
     """
 
@@ -241,7 +241,7 @@ def process_directory(dir_path: Path, ICRF: Optional[np.ndarray] = None, separat
     a single mean and std frame can be computed for them all.
     Args:
         dir_path: path to the directory containing the video files.
-        ICRF: the inverse camera response function, shape (BITS, CHANNELS) should match the video data.
+        ICRF: the inverse camera response function, shape (gs.BITS, gs.NUM_OF_CHS) should match the video data.
         separately: whether to process the files separately.
     """
     video_files = list(dir_path.glob("*.avi"))
