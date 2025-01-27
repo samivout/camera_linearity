@@ -367,9 +367,9 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
     def solve_channel(PCA_file_name: str, mean_ICRF_file_name: str, channel: int, seed,
                       image_value_stack, image_std_stack, exposure_values):
 
-        PCA_array = rd.read_data_from_txt(PCA_file_name)
+        PCA_array = rd.read_txt_to_array(PCA_file_name)
         if use_mean_ICRF:
-            mean_ICRF_array = rd.read_data_from_txt(mean_ICRF_file_name)
+            mean_ICRF_array = rd.read_txt_to_array(mean_ICRF_file_name)
         else:
             mean_ICRF_array = initial_function
 

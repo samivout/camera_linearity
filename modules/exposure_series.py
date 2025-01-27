@@ -191,28 +191,26 @@ class ExposureSeries(object):
 
         return list_of_exposure_series
 
-    def load_value_images(self, bit_64: Optional[bool] = False, use_cupy: Optional[bool] = True):
+    def load_value_images(self, bit_64: Optional[bool] = False):
         """
         Preloads all value images of the managed input images into memory.
         Args:
             bit_64: whether to load images at bit-depth of 64 or 8.
-            use_cupy: whether to use CuPy arrays or NumPy arrays.
         """
         image_set: ImageSet
         for image_set in self.input_image_sets:
 
-            image_set.load_value_image(bit64=bit_64, use_cupy=use_cupy)
+            image_set.load_value_image(bit64=bit_64)
 
-    def load_std_images(self, bit_64: Optional[bool] = False, use_cupy: Optional[bool] = True):
+    def load_std_images(self, bit_64: Optional[bool] = False):
         """
         Preloads all std images of the managed input images into memory.
         Args:
             bit_64: whether to load images at bit-depth of 64 or 8.
-            use_cupy: whether to use CuPy arrays or NumPy arrays.
         """
         image_set: ImageSet
         for image_set in self.input_image_sets:
-            image_set.load_std_image(bit64=bit_64, use_cupy=use_cupy)
+            image_set.load_std_image(bit64=bit_64)
 
     def linearize(self, ICRF: cnp.ndarray, ICRF_diff: Optional[cnp.ndarray] = None, release_memory: Optional[bool] = False):
         """
@@ -389,7 +387,7 @@ class ExposureSeries(object):
             ICRF: The utilized ICRF. If no ICRF is given, the default ICRF is loaded instead.
         """
         if ICRF is None:
-            ICRF = rd.read_data_from_txt(gs.ICRF_CALIBRATED_FILE)
+            ICRF = rd.read_txt_to_array(gs.ICRF_CALIBRATED_FILE)
 
         ICRF_diff = cp.zeros_like(ICRF)
         dx = 2 / (gs.BITS - 1)
