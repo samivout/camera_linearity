@@ -13,20 +13,21 @@ import math
 from pathlib import Path
 from typing import Optional, List, Dict, Union
 from cupyx.scipy.ndimage import median_filter
-from measurand import Measurand, NumPyMeasurand
+from measurand import AbstractMeasurand
+from measurand_factory import Measurand, measurand_to_numpy, measurand_to_cupy, CUPY_AVAILABLE
 from global_settings import GlobalSettings as gs
 import read_data as rd
 from cupy_wrapper import get_array_libraries
 
-np, cp, cupy_available = get_array_libraries()
-cnp = cp if cupy_available else np
+np, cp = get_array_libraries()
+cnp = cp if CUPY_AVAILABLE else np
 
 
 class ImageSet(object):
 
     def __init__(self, file_path: Optional[str | Path] = None, value: Optional[cnp.ndarray] = None,
                  std: Optional[cnp.ndarray] = None, features: Optional[Dict] = None,
-                 measurand: Optional[Union[Measurand, NumPyMeasurand]] = None, channels: Optional[List[int]] = None,
+                 measurand: Optional[AbstractMeasurand] = None, channels: Optional[List[int]] = None,
                  use_cupy: Optional[bool] = True):
 
         if isinstance(file_path, str):
@@ -36,17 +37,13 @@ class ImageSet(object):
 
         if measurand is not None:
             self._measurand = measurand
-            if isinstance(measurand, NumPyMeasurand):
+            if measurand.NormalizableType:  # TODO: Write logic for determining the type of Measurand.
                 self._use_cupy = False
             elif isinstance(measurand, Measurand):
                 self._use_cupy = True
         else:
-            if use_cupy and cupy_available:
-                self._measurand = Measurand(value, std)
-                self._use_cupy = True
-            else:
-                self._measurand = NumPyMeasurand(value, std)
-                self._use_cupy = False
+            self._measurand = Measurand(value, std, use_cupy)
+            self._use_cupy = use_cupy
 
         if features is not None:
             self.features = features
@@ -78,17 +75,15 @@ class ImageSet(object):
         """
         Convert this ImageSet to use NumPy.
         """
-        if isinstance(self.measurand, Measurand):
-            self._use_cupy = False
-            self._measurand = self._measurand.to_numpy()
+        self._measurand = measurand_to_numpy(self.measurand)
+        self._use_cupy = False
 
     def to_cupy(self):
         """
         Convert this ImageSet to use CuPy
         """
-        if isinstance(self.measurand, NumPyMeasurand):
-            self._use_cupy = True
-            self._measurand = self._measurand.to_cupy()
+        self._measurand = measurand_to_cupy(self.measurand)
+        self._use_cupy = True
 
     def linearize(self, ICRF: cnp.ndarray, ICRF_diff: Optional[cnp.ndarray] = None):
         """
@@ -406,41 +401,21 @@ class ImageSet(object):
 
         return numerical_measurand.val
 
-    def bad_pixel_filter(self: 'ImageSet', darkSet: 'ImageSet'):
+    def bad_pixel_filter(self: 'ImageSet', darkSet: 'ImageSet', threshold_value: Optional[float]):
         """
         Replace hot pixels with surrounding median value.
 
         Args:
             acqSet: ImageSet object of image being corrected.
             darkSet: ImageSet object of dark frame used to map bad pixels.
+            threshold_value: threshold for considering a pixel as a hot pixel.
 
         Returns:
             ImageSet with corrected image.
         """
 
-        def filter_hot_positions(acq, dark, convolve):
-            hot_indices = dark > gs.HOT_PIXEL_THRESHOLD
-            acq[hot_indices] = convolve[hot_indices]
-            return acq
-
-        print(f'Bad pixel filter for image: {self.path} and dark: {darkSet.path}')
-        convolved_image = cp.zeros_like(self.measurand.val, dtype=cp.dtype('float64'))
-        for c in range(gs.NUM_OF_CHS):
-            convolved_image[:, :, c] = median_filter(self.measurand.val[:, :, c],
-                                                     (gs.MEDIAN_FILTER_KERNEL_SIZE, gs.MEDIAN_FILTER_KERNEL_SIZE),
-                                                     mode='reflect')
-
-        acq = filter_hot_positions(self.measurand.val, darkSet.measurand.val, convolved_image)
-
-        if self.measurand.std is not None:
-            for c in range(gs.NUM_OF_CHS):
-                convolved_image[:, :, c] = median_filter(self.measurand.std[:, :, c],
-                                                         (gs.MEDIAN_FILTER_KERNEL_SIZE, gs.MEDIAN_FILTER_KERNEL_SIZE),
-                                                         mode='reflect')
-
-            self.measurand.std = filter_hot_positions(acq, darkSet.measurand.val, convolved_image)
-
-        self.measurand.val = acq
+        new_measurand = self.measurand.filter_larger_than_by_map(darkSet.measurand, threshold_value)
+        return ImageSet(file_path=self.path, measurand=new_measurand)
 
     def flat_field_correction(self: 'ImageSet', flatSet: 'ImageSet'):
         """
@@ -455,61 +430,14 @@ class ImageSet(object):
             The corrected image as an ImageSet object.
         """
 
-        def flat_field_mean(flat_field):
-            """
-            Calculates the mean brightness of an image inside a centered ROI.
-
-            Returns:
-                list of mean image brightness inside ROI for each channel.
-            """
-            flat_field_means = []
-
-            # Define ROI for calculating flat field spatial mean
-            ROI_dx = math.floor(gs.IM_SIZE_X * gs.FF_MID_PERCENTAGE)
-            ROI_dy = math.floor(gs.IM_SIZE_Y * gs.FF_MID_PERCENTAGE)
-            ROI_start_index = (math.floor(
-                1 / gs.FF_MID_PERCENTAGE) - 1) / 2  # Should be an odd number to center on image.
-
-            # Calculate ROI bounds
-            x_start, x_end = ROI_start_index * ROI_dx, (ROI_start_index + 1) * ROI_dx
-            y_start, y_end = ROI_start_index * ROI_dy, (ROI_start_index + 1) * ROI_dy
-
-            # Slice ROI for all channels and compute the mean across spatial dimensions
-            return cnp.mean(flat_field[x_start:x_end, y_start:y_end, :], axis=(0, 1))
-
         if flatSet.measurand.val is None:
             flatSet.load_value_image()
         if flatSet.measurand.std is None:
             flatSet.load_std_image()
 
-        # Determine flat field means
-        flat_field_means = flat_field_mean(flatSet.measurand.val)
-        flat_field_stds = flat_field_mean(flatSet.measurand.std)
+        new_measurand = self.measurand.normalize_by_map(flatSet.measurand)
 
-        # Simplify variable names
-        acq = self.measurand.val
-        flat = flatSet.measurand.val
-        u_acq = self.measurand.std
-        u_ff = flatSet.measurand.std
-
-        # Compute input image uncertainty
-        u_acq_term = (u_acq ** 2) / (flat ** 2)
-        u_acq_term *= flat_field_means ** 2
-
-        # Compute flat field uncertainty
-        u_ff_term = (acq ** 2) / (flat ** 4)
-        u_ff_term *= u_ff ** 2
-        u_ff_term *= flat_field_means ** 2
-
-        # Compute flat field mean uncertainty
-        u_ffm_term = (acq ** 2) / (flat ** 2)
-        u_ffm_term *= flat_field_stds ** 2
-
-        # Update uncertainty with the combined terms
-        self.measurand.std = cnp.sqrt(u_acq_term + u_ff_term + u_ffm_term)
-
-        # Flat field correction (broadcast multiplication for channel-specific scaling)
-        self.measurand.val = (acq / flat) * flat_field_means
+        return ImageSet(file_path=self.path, measurand=new_measurand)
 
     def show_image(self):
         """
