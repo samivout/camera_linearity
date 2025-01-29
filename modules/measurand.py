@@ -29,6 +29,7 @@ ScalarType = Union[int, float]
 class AbstractMeasurand(ABC):
 
     lib = np                                # Default class variables to NumPy.
+    backend = "numpy"
     fn_median_filter = np_median_filter
     ArrayType = np.ndarray
     InputType = Union[ArrayType, ScalarType]
@@ -40,30 +41,50 @@ class AbstractMeasurand(ABC):
         if self.InputType is None:
             raise NotImplementedError("Subclasses must define input type to match the array library.")
 
+        self._val = val
+        self._std = std
+        self._channels = None
+
     """
     Base class for the Measurand, enforcing an interface for managing a measured value and its associated uncertainty.
     """
+
     @property
-    @abstractmethod
-    def val(self: 'AbstractMeasurand'):
-        """Measured image data."""
-        pass
+    def val(self):
+        return self._val
 
     @val.setter
-    @abstractmethod
-    def val(self: 'AbstractMeasurand', value: InputType):
-        pass
+    def val(self, value: Optional[ArrayType]):
+        if value is not None and not isinstance(value, self.ArrayType):
+            raise TypeError(f"val must be an array or None, got {type(value)} instead.")
+        self._val = value
+
+        number_of_dims = len(self.lib.shape(self._val))
+        self._channels = self.lib.arange(0, number_of_dims, step=1)
 
     @property
-    @abstractmethod
-    def std(self: 'AbstractMeasurand'):
-        """Standard deviation of the measured image."""
-        pass
+    def std(self):
+        return self._std
 
     @std.setter
-    @abstractmethod
-    def std(self: 'AbstractMeasurand', value: Optional[InputType]):
-        pass
+    def std(self, value: Optional[ArrayType]):
+        if value is not None and not isinstance(value, self.ArrayType):
+            raise TypeError(f"std must be an array or None, got {type(value)} instead.")
+        self._std = value
+
+    @property
+    def channels(self):
+        """
+        Read-only property, which is based on the shape of the value (and std) instance attributes.
+        Returns:
+            The number of channels in the value (and std) array.
+        """
+        return self._channels
+
+    @channels.setter
+    def channels(self, new_channels: Optional[ArrayType]):
+        """Read-only property, raises an error if attempting to modify."""
+        raise AttributeError("Channels is a read-only attribute, based on the shape of val array.")
 
     def __repr__(self):
 
@@ -464,7 +485,6 @@ class AbstractMeasurand(ABC):
         Returns:
             A new Measurand object with the linearized values.
         """
-        channels = self.val.shape[-1]
 
         use_std = False
         if self.std is not None and ICRF_diff is not None:
@@ -475,12 +495,12 @@ class AbstractMeasurand(ABC):
         else:
             integer_values = self.val.copy()
 
-        result = ICRF[integer_values, self.lib.arange(channels)]
+        result = ICRF[integer_values[..., None], self.channels]
 
         if not use_std:
             return self.__class__(result, None)
 
-        result_std = ICRF_diff[integer_values, self.lib.arange(channels)] * self.std
+        result_std = ICRF_diff[integer_values[..., None], self.channels] * self.std
 
         return self.__class__(result, result_std)
 
@@ -638,12 +658,13 @@ class AbstractMeasurand(ABC):
         return cls(res, res_std)
 
 
-class NumPyMeasurand(AbstractMeasurand):
+class NumpyMeasurand(AbstractMeasurand):
     """
     NumPy version of the base AbstractMeasurand class.
     """
 
     lib = np
+    backend = "numpy"
     fn_median_filter = np_median_filter
     ArrayType = np.ndarray
     InputType = Union[ScalarType, ArrayType]
@@ -668,26 +689,6 @@ class NumPyMeasurand(AbstractMeasurand):
         self._val = val
         self._std = std
         self._initialized = True
-
-    @property
-    def val(self):
-        return self._val
-
-    @val.setter
-    def val(self, value: Optional[np.ndarray]):
-        if value is not None and not isinstance(value, self.ArrayType):
-            raise TypeError(f"val must be an array or None, got {type(value)} instead.")
-        self._val = value
-
-    @property
-    def std(self):
-        return self._std
-
-    @std.setter
-    def std(self, value: Optional[np.ndarray]):
-        if value is not None and not isinstance(value, self.ArrayType):
-            raise TypeError(f"std must be an array or None, got {type(value)} instead.")
-        self._std = value
 
     def compute_kernel_density_estimate(self, data_points: int, included_range: Optional[tuple[float, float]] = None,
                                         channels: Optional[List[int]] = None, use_std: Optional[bool] = False):
