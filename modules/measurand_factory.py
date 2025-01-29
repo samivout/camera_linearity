@@ -1,25 +1,27 @@
-from typing import Optional
-from measurand import NumPyMeasurand
+from typing import Optional, Union
+from measurand import NumpyMeasurand
 import numpy as np
 
 try:
     import cupy as cp
-    from cupy_measurand import CuPyMeasurand
+    from cupy_measurand import CupyMeasurand
     CUPY_AVAILABLE = True
+    ArrayType = Union[np.ndarray, cp.ndarray]
 except ImportError:
-    CuPyMeasurand = NumPyMeasurand
+    CuPyMeasurand = NumpyMeasurand
     cp = np
     CUPY_AVAILABLE = False
+    ArrayType = np.ndarray
 
 
 def Measurand(val: Optional = None, std: Optional = None, use_cupy=True):
     """Factory function to return the appropriate Measurand class."""
     if use_cupy and CUPY_AVAILABLE:
-        return CuPyMeasurand(val, std)
-    return NumPyMeasurand(val, std)
+        return CupyMeasurand(val, std)
+    return NumpyMeasurand(val, std)
 
 
-def measurand_to_cupy(numpy_measurand: NumPyMeasurand):
+def measurand_to_cupy(numpy_measurand: NumpyMeasurand):
     """
      Returns a new instance of the measurand converted to utilize CuPy.
      Returns:
@@ -37,10 +39,10 @@ def measurand_to_cupy(numpy_measurand: NumPyMeasurand):
     else:
         ret_std = None
 
-    return CuPyMeasurand(val=ret_val, std=ret_std)
+    return CupyMeasurand(val=ret_val, std=ret_std)
 
 
-def measurand_to_numpy(cupy_measurand: CuPyMeasurand):
+def measurand_to_numpy(cupy_measurand: CupyMeasurand):
     """
     Returns a new instance of the measurand converted to utilize NumPy.
     Returns:
@@ -58,4 +60,4 @@ def measurand_to_numpy(cupy_measurand: CuPyMeasurand):
     else:
         ret_std = None
 
-    return NumPyMeasurand(val=ret_val, std=ret_std)
+    return NumpyMeasurand(val=ret_val, std=ret_std)
