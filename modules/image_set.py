@@ -73,6 +73,15 @@ class ImageSet(object):
             else:
                 self._use_cupy = True
 
+    @property
+    def use_cupy(self):
+        return self._use_cupy
+
+    @use_cupy.setter
+    def use_cupy(self, new_value):
+        """Read-only property, raises an error if attempting to modify."""
+        raise AttributeError("use_cupy is a read-only attribute, managing the state of the used array backend.")
+
     def to_numpy(self):
         """
         Convert this ImageSet to use NumPy.
@@ -202,11 +211,13 @@ class ImageSet(object):
     def load_value_image(self, bit64: Optional[bool] = False):
         """
         Load the acquired image of the ImageSet object into memory. You can specify whether to load it as an 8-bits per
-        channel image or a 64-bit float per channel image.
+        channel image or a 64-bit float per channel image. If image data already exists, doesn't do anything.
 
         Args:
             bit64: whether the image should be in 64-bit float form or not.
         """
+        if self.measurand.val is not None:
+            return
 
         if not bit64:
             value = cv.imread(str(self.path)).astype(np.float64) / gs.MAX_DN
@@ -216,11 +227,14 @@ class ImageSet(object):
 
     def load_std_image(self, STD_data: Optional[ArrayType] = None, bit64: Optional[bool] = False):
         """
-        Loads the error image of an ImageSet object to memory.
+        Loads the error image of an ImageSet object to memory. If std data already exists, doesn't do anything.
         Args:
             bit64: whether the image to load is already in float or not
             STD_data: Numpy array representing the STD data of pixel values.
         """
+        if self.measurand.std is not None:
+            return
+
         std_path = str(self.path).removesuffix('.tif') + ' STD.tif'
         std_array = cv.imread(std_path, cv.IMREAD_UNCHANGED)
         if std_array is None:
@@ -373,7 +387,7 @@ class ImageSet(object):
 
         return numerical_measurand.val
 
-    def bad_pixel_filter(self: 'ImageSet', darkSet: 'ImageSet', threshold_value: Optional[float]):
+    def bad_pixel_filter(self: 'ImageSet', darkSet: 'ImageSet', threshold_value: Optional[float] = gs.DARK_THRESHOLD):
         """
         Replace hot pixels with surrounding median value.
 
