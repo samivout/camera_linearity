@@ -306,6 +306,20 @@ class AbstractMeasurand(ABC):
 
         return normalized_other, use_std
 
+    def zeros_like_measurand(self):
+        """
+        Initializes and returns a new measurand object with .val and .std of same size as self, but elements set to zero.
+        Returns: a new measurand with same size, filled with zeros.
+        """
+        new_val = None
+        if self.val is not None:
+            new_val = self.lib.zeros_like(self.val)
+        new_std = None
+        if self.std is not None:
+            new_std = self.lib.zeros_like(self.std)
+
+        return self.__class__(new_val, new_std)
+
     def compute_dimension_statistics(self, axis: Optional[None | int | tuple[int, ...]] = None):
         """
         Computes statistics using the given axis, which follows NumPy conventions. Based on the availability of .std
@@ -593,6 +607,20 @@ class AbstractMeasurand(ABC):
         ret_val = (self.val / map.val) * flat_field_means
 
         return self.__class__(ret_val, ret_std)
+
+    def apply_gaussian_weight(self: 'AbstractMeasurand'):
+        """
+        Weighting function used to give priority to pixels that are more towards the center of the [0,1] range of digital
+        values. The form is a general gaussian, for which the peak is set to 1.
+
+        Returns:
+            the weighted value and the corresponding derivative value.
+        """
+        # Normal distribution: np.e ** (-0.5 * ((x-0.5) / 0.1) ** 2)
+        y = self.lib.e ** (-30 * (self.val - 0.5) ** 2)
+        dydx = -2 * 30 * (self.val - 0.5) * y
+
+        return y, dydx
 
     @staticmethod
     def compute_difference(x: 'AbstractMeasurand', y: 'AbstractMeasurand', multiplier: float):
