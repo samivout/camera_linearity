@@ -1,3 +1,6 @@
 /data/
 .hypothesis/
 /.idea/
+*/__pycache__/*
+
+*.pyc
