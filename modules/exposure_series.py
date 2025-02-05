@@ -11,11 +11,7 @@ from typing import Optional
 from typing import List
 from typing import Dict
 from global_settings import GlobalSettings as gs
-
-from cupy_wrapper import get_array_libraries
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+from measurand_factory import generic_to_array, ArrayType
 
 
 class ExposurePair(object):
@@ -85,7 +81,7 @@ class ExposureSeries(object):
     ExposureSeries are formed from a collection of ImageSets, whose features are the same, except exposure time.
     """
     def __init__(self, merged_image_set: Optional[ImageSet] = None, directory_path: Optional[Path] = None,
-                 input_image_sets: Optional[List[ImageSet]] = None):
+                 input_image_sets: Optional[List[ImageSet]] = None, use_cupy: Optional[bool] = True):
 
         self.merged_image_set = None
         if merged_image_set is not None:
@@ -102,6 +98,20 @@ class ExposureSeries(object):
             self.directory_path = directory_path
 
         self.exposure_pairs = None
+
+        if not input_image_sets:
+            self._use_cupy = use_cupy
+        else:
+            self._use_cupy = input_image_sets[0].use_cupy
+
+    @property
+    def use_cupy(self):
+        return self._use_cupy
+
+    @use_cupy.setter
+    def use_cupy(self, new_value):
+        """Read-only property, raises an error if attempting to modify."""
+        raise AttributeError("use_cupy is a read-only attribute, managing the state of the used array backend.")
 
     @classmethod
     def from_image_set(cls, reference_image_set: ImageSet, directory_path: Optional[Path] = None):
@@ -212,7 +222,7 @@ class ExposureSeries(object):
         for image_set in self.input_image_sets:
             image_set.load_std_image(bit64=bit_64)
 
-    def linearize(self, ICRF: cnp.ndarray, ICRF_diff: Optional[cnp.ndarray] = None, release_memory: Optional[bool] = False):
+    def linearize(self, ICRF: ArrayType, ICRF_diff: Optional[ArrayType] = None, release_memory: Optional[bool] = False):
         """
         Calls the linearize method of all managed input ImageSets witht the given ICRF and its derivative. This
         operation constructs a new ExposureSeries object. release_memory argument can be used to dynamically release
@@ -303,7 +313,8 @@ class ExposureSeries(object):
         elif self.input_image_sets:
             self.merged_image_set.path = self.input_image_sets[0].get_file_path_without_exposure()
 
-    def _precalculate_sum_of_weights(self, list_of_dark_fields: List[ImageSet]):
+    def _precalculate_sum_of_weights(self, list_of_dark_fields: List[ImageSet],
+                                     dark_threshold: Optional[float] = gs.DARK_THRESHOLD):
         """
         Apply the weighting function to all the pixels in each image and compute a sum of weights image and its square.
         By precomputing the divisor of the HDR image merging computation, we can run the calculation considerably faster.
@@ -313,7 +324,10 @@ class ExposureSeries(object):
         Returns:
             A sum of weights array and its element-wise square.
         """
-        sum_of_weights = cnp.zeros((gs.IM_SIZE_Y, gs.IM_SIZE_X, gs.NUM_OF_CHS), dtype=(cnp.dtype('float64')))
+        first_image_set = self.input_image_sets[0]
+        if first_image_set.measurand.val is None:
+            first_image_set.load_value_image()
+        sum_of_weights = first_image_set.measurand.zeros_like_measurand()
 
         image_set: ImageSet
         for image_set in self.input_image_sets:
@@ -321,8 +335,8 @@ class ExposureSeries(object):
             image_set.load_value_image()
             dark_set = image_set.get_dark_field(list_of_dark_fields)
             if dark_set is not None:
-                image_set.bad_pixel_filter(dark_set)
-            sum_of_weights += vectorized_weight(image_set.measurand.val)[0]
+                image_set.bad_pixel_filter(dark_set, dark_threshold)
+            sum_of_weights += image_set.measurand.apply_gaussian_weight()[0]
             image_set.measurand.val = None
 
         squared_sum_of_weight = sum_of_weights ** 2
@@ -330,8 +344,8 @@ class ExposureSeries(object):
         return sum_of_weights, squared_sum_of_weight
 
     def _compute_HDR_image_set(self, list_of_dark_fields: List[ImageSet],
-                               sum_of_weights: cnp.ndarray, square_sum_of_weights: cnp.ndarray,
-                               ICRF: cnp.ndarray, ICRF_diff: cnp.ndarray):
+                               sum_of_weights: ArrayType, square_sum_of_weights: ArrayType,
+                               ICRF: ArrayType, ICRF_diff: ArrayType):
         """
         Function to calculate an HDR image from multiple exposures. Uses dark frames for bad pixel filtering, ICRF
         for linearization and the precalculated weigths.
@@ -346,9 +360,12 @@ class ExposureSeries(object):
         Returns:
             The merged HDR image as an ImageSet object.
         """
-        HDR_arr = cnp.zeros((gs.IM_SIZE_Y, gs.IM_SIZE_X, gs.NUM_OF_CHS), dtype=cnp.dtype('float64'))
-        HDR_std = cnp.zeros((gs.IM_SIZE_Y, gs.IM_SIZE_X, gs.NUM_OF_CHS), dtype=cnp.dtype('float64'))
-        image_set_HDR_path = self.input_image_sets[0].get_file_path_without_exposure()
+        first_image_set = self.input_image_sets[0]
+        if first_image_set.measurand.val is not None:
+            first_image_set.load_value_image()
+
+        HDR_measurand = first_image_set.measurand.zeros_like_measurand()
+        HDR_image_path = self.input_image_sets[0].get_file_path_without_exposure()
 
         image_set: ImageSet
         for image_set in self.input_image_sets:
@@ -357,29 +374,28 @@ class ExposureSeries(object):
 
             image_set.load_value_image()
             image_set.load_std_image()
-            delta_b = image_set.measurand.std
 
             if dark_set is not None:
                 image_set.bad_pixel_filter(dark_set)
 
-            w, dw = vectorized_weight(image_set.measurand.val)
+            w, dw = image_set.measurand.apply_gaussian_weight()
             image_set.measurand = image_set.measurand.linearize(ICRF, ICRF_diff)
             g = image_set.measurand.val
             dg = image_set.measurand.std
             t = image_set.features['exposure']
 
-            HDR_arr += (w * g) / (sum_of_weights * t)
-            HDR_std += (((dw * g + w * dg) / sum_of_weights - (dw * w * g) / square_sum_of_weights) * delta_b / t) ** 2
+            HDR_measurand.val += (w * g) / (sum_of_weights * t)
+            HDR_measurand.std += (((dw * g + w * dg) / sum_of_weights - (dw * w * g) / square_sum_of_weights) * dg / t) ** 2
 
             image_set.measurand.val = None
             image_set.measurand.std = None
 
-        HDR_std = cp.sqrt(HDR_std)
-        image_set_HDR = ImageSet(image_set_HDR_path, HDR_arr, HDR_std)
+        HDR_measurand.std = HDR_measurand.std ** (1 / 2)
+        HDR_image_set = ImageSet(file_path=HDR_image_path, measurand=HDR_measurand)
 
-        return image_set_HDR
+        return HDR_image_set
 
-    def process_HDR_image(self, ICRF: Optional[cnp.ndarray] = None):
+    def process_HDR_image(self, ICRF: Optional[ArrayType] = None):
         """
         Main function for merging the input images into HDR images.
 
@@ -387,12 +403,7 @@ class ExposureSeries(object):
             ICRF: The utilized ICRF. If no ICRF is given, the default ICRF is loaded instead.
         """
         if ICRF is None:
-            ICRF = rd.read_txt_to_array(gs.ICRF_CALIBRATED_FILE)
-
-        ICRF_diff = cp.zeros_like(ICRF)
-        dx = 2 / (gs.BITS - 1)
-        for c in range(gs.NUM_OF_CHS):
-            ICRF_diff[:, c] = cnp.gradient(ICRF[:, c], dx)
+            ICRF, ICRF_diff = rd.read_txt_to_array(gs.ICRF_CALIBRATED_FILE)
 
         dark_list = ImageSet.multiple_from_path(gs.DEFAULT_DARK_PATH)
 
@@ -406,7 +417,7 @@ class ExposureSeries(object):
 
         self.merged_image_set = HDR_imageSet
 
-    def process_linearity(self, ICRF: cnp.ndarray, linearity_limit: Optional[int] = None,
+    def process_linearity(self, ICRF: ArrayType, linearity_limit: Optional[int] = None,
                           use_std: Optional[bool] = False):
         """
         Main method responsible for getting the linearity statistics for the exposure series.
@@ -464,30 +475,12 @@ class ExposureSeries(object):
         return absolute_results, relative_results
 
 
-def weight(x: float):
-    """
-    Weighting function used to give priority to pixels that are more towards the center of the [0,1] range of digital
-    values. The form is a general gaussian, for which the peak is set to 1.
-
-    Args:
-        x: the digital value of the pixel in [0,1] range.
-
-    Returns:
-        the weighted value and the corresponding derivative value.
-    """
-    # Normal distribution: np.e ** (-0.5 * ((x-0.5) / 0.1) ** 2)
-    y = cnp.e ** (-30 * (x - 0.5) ** 2)
-    dydx = -2 * 30 * (x - 0.5) * y
-
-    return y, dydx
-
-
-def _to_2d_array(dictionary: Dict, return_cupy: bool):
+def _to_2d_array(dictionary: Dict, use_cupy: bool):
     """
     Helper function to convert dictionary entries of nested lists into 2d CuPy or NumPy arrays.
     Args:
         dictionary: input dictionary with nested lists as entries.
-        return_cupy: whether to return a CuPy or NumPy array.
+        use_cupy: whether to return a CuPy or NumPy array.
 
     Returns:
         Dictionary with its entries converted into 2-d arrays.
@@ -495,15 +488,11 @@ def _to_2d_array(dictionary: Dict, return_cupy: bool):
     for key in dictionary.keys():
 
         value = dictionary[key]
-        value = cnp.array(value)
-        if using_cupy and not return_cupy:
-            value = cp.asnumpy(value)
+        value = generic_to_array(value, use_cupy)
         dictionary[key] = value
 
     return dictionary
 
-
-vectorized_weight = cnp.vectorize(weight)
 
 if __name__ == "__main__":
     pass
