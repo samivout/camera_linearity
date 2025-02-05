@@ -21,6 +21,21 @@ def Measurand(val: Optional = None, std: Optional = None, use_cupy=True):
     return NumpyMeasurand(val, std)
 
 
+def generic_to_array(generic_value, use_cupy: Optional[bool] = False):
+    """
+    Wrapper function to convert generics to either a CuPy array or NumPy array based on availability and user input.
+    Args:
+        generic_value: a type that can be cast to a CuPy array.
+        use_cupy: whether to return a CuPy or NumPy array.
+    Returns:
+        CuPy array of the generic, provided that CuPy is available. Otherwise, returns input as is.
+    """
+    if not CUPY_AVAILABLE or not use_cupy:
+        return np.array(generic_value)
+
+    return cp.array(generic_value)
+
+
 def measurand_to_cupy(numpy_measurand: NumpyMeasurand):
     """
      Returns a new instance of the measurand converted to utilize CuPy.
