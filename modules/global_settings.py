@@ -2,7 +2,7 @@
 Module for reading and importing global settings from config.ini file in the project data directory.
 TODO: Refactor some things to instance attributes of ImageSet.
 """
-import read_data as rd
+import read_config as rd
 from pathlib import Path
 
 
