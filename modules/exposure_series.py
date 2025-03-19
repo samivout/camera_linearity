@@ -4,14 +4,15 @@ linearity of a stack of images captured at different exposure times. Also implem
 stack into an HDR image.
 """
 from pathlib import Path
+
+import general_functions
 import general_functions as gf
-import read_data as rd
 from image_set import ImageSet
 from typing import Optional
 from typing import List
 from typing import Dict
 from global_settings import GlobalSettings as gs
-from measurand_factory import generic_to_array, ArrayType
+from array_wrapper import cast_to_array, ArrayType
 
 
 class ExposurePair(object):
@@ -403,7 +404,7 @@ class ExposureSeries(object):
             ICRF: The utilized ICRF. If no ICRF is given, the default ICRF is loaded instead.
         """
         if ICRF is None:
-            ICRF, ICRF_diff = rd.read_txt_to_array(gs.ICRF_CALIBRATED_FILE)
+            ICRF, ICRF_diff = general_functions.read_txt_to_array(gs.ICRF_CALIBRATED_FILE)
 
         dark_list = ImageSet.multiple_from_path(gs.DEFAULT_DARK_PATH)
 
@@ -488,7 +489,7 @@ def _to_2d_array(dictionary: Dict, use_cupy: bool):
     for key in dictionary.keys():
 
         value = dictionary[key]
-        value = generic_to_array(value, use_cupy)
+        value = cast_to_array(value, use_cupy)
         dictionary[key] = value
 
     return dictionary
