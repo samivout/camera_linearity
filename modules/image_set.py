@@ -7,15 +7,18 @@ uncertainty image, it should contain a separate 'STD' descriptor in it. Only
 .tif support for now. Flat field images should have a name 'flat' in them
 and dark frames should have 'dark' in them. TODO: implement common file types.
 """
+import copy
+
 import cv2 as cv
 import re
 from pathlib import Path
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict
+
+import general_functions
 from measurand import AbstractMeasurand
-from measurand_factory import Measurand, measurand_to_numpy, measurand_to_cupy, CUPY_AVAILABLE, ArrayType
+from array_wrapper import ArrayType
+from measurand_factory import Measurand, measurand_to_cupy, measurand_to_numpy
 from global_settings import GlobalSettings as gs
-import read_data as rd
-from cupy_wrapper import get_array_libraries
 import numpy as np
 
 
@@ -23,7 +26,7 @@ class ImageSet(object):
 
     def __init__(self, file_path: Optional[str | Path] = None, value: Optional[ArrayType] = None,
                  std: Optional[ArrayType] = None, features: Optional[Dict] = None,
-                 measurand: Optional[AbstractMeasurand] = None, use_cupy: Optional[bool] = True):
+                 measurand: Optional[AbstractMeasurand] = None, use_cupy: Optional[bool] = False):
 
         if isinstance(file_path, str):
             self.path = Path(file_path)
@@ -216,9 +219,6 @@ class ImageSet(object):
         Args:
             bit64: whether the image should be in 64-bit float form or not.
         """
-        if self.measurand.val is not None:
-            return
-
         if not bit64:
             value = cv.imread(str(self.path)).astype(np.float64) / gs.MAX_DN
         else:
@@ -232,9 +232,6 @@ class ImageSet(object):
             bit64: whether the image to load is already in float or not
             STD_data: Numpy array representing the STD data of pixel values.
         """
-        if self.measurand.std is not None:
-            return
-
         std_path = str(self.path).removesuffix('.tif') + ' STD.tif'
         std_array = cv.imread(std_path, cv.IMREAD_UNCHANGED)
         if std_array is None:
@@ -342,7 +339,7 @@ class ImageSet(object):
         save_stds = None
 
         if self.measurand.backend == "numpy":
-            tmp_measurand = self.measurand.__deepcopy__()
+            tmp_measurand = copy.deepcopy(self.measurand)
         else:
             tmp_measurand = measurand_to_numpy(self.measurand)
 
@@ -378,7 +375,7 @@ class ImageSet(object):
         """
         if STD_data is None:
             try:
-                STD_data = rd.read_txt_to_array(gs.STD_FILE_NAME, use_cupy=self._use_cupy)
+                STD_data = general_functions.read_txt_to_array(gs.STD_FILE_NAME, use_cupy=self._use_cupy)
             except FileNotFoundError:
                 print('Could not load STD data for numerical estimation.')
                 return None
@@ -392,7 +389,6 @@ class ImageSet(object):
         Replace hot pixels with surrounding median value.
 
         Args:
-            acqSet: ImageSet object of image being corrected.
             darkSet: ImageSet object of dark frame used to map bad pixels.
             threshold_value: threshold for considering a pixel as a hot pixel.
 
@@ -409,7 +405,6 @@ class ImageSet(object):
         an uncertainty image.
 
         Args:
-            imageSet: the acquired image subject to flat-field correction.
             flatSet: the flat-field image used for correction.
 
         Returns:
@@ -444,8 +439,9 @@ class ImageSet(object):
 
         ratio = short_exposure_set.features["exposure"] / long_exposure_set.features["exposure"]
 
-        absolute_measurand, relative_measurand = Measurand.compute_difference(short_exposure_set.measurand,
-                                                                              long_exposure_set.measurand, ratio)
+        absolute_measurand, relative_measurand = AbstractMeasurand.compute_difference(short_exposure_set.measurand,
+                                                                                      long_exposure_set.measurand,
+                                                                                      ratio)
 
         absolute_set = ImageSet(file_path=short_exposure_set.path, features=short_exposure_set.features,
                                 measurand=absolute_measurand)
@@ -479,7 +475,7 @@ class ImageSet(object):
         if exp > exp1 or exp < exp0:
             raise ValueError('Interpolation point is not between the reference values.')
 
-        new_measurand = Measurand.interpolate(x0, x1, exp0, exp1, exp)
+        new_measurand = AbstractMeasurand.interpolate(x0, x1, exp0, exp1, exp)
 
         return ImageSet(features=short_exposure_set.features, measurand=new_measurand)
 
@@ -552,7 +548,11 @@ def _features_from_file_name(file_path: Path):
     Returns:
         A dictionary containing the features under the given keys.
     """
-    feature_dict = {}
+    feature_dict = {"illumination": "",
+                    "magnification": "",
+                    "exposure": 0.0,
+                    "subject": ""}
+
     file_name_array = file_path.name.removesuffix('.tif').split()
 
     for element in file_name_array:
