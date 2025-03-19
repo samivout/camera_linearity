@@ -12,16 +12,13 @@ import general_functions as gf
 import copy
 from abc import ABC, abstractmethod
 
-from cupy_wrapper import get_array_libraries
+from array_wrapper import np
 from typing import Optional
 from typing import Union
 from typing import List
 from global_settings import GlobalSettings as gs
 from scipy.stats import gaussian_kde
 from scipy.ndimage import median_filter as np_median_filter
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
 
 ScalarType = Union[int, float]
 
@@ -99,14 +96,12 @@ class AbstractMeasurand(ABC):
         return self.__class__(self.val, self.std)
 
     def __deepcopy__(self, memo):
-
-        value, std = None, None
-        if self.val is not None:
-            value = copy.deepcopy(self.val, memo)
-        if self.std is not None:
-            std = copy.deepcopy(self.std, memo)
-
-        return self.__class__(value, std)
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            setattr(result, k, copy.deepcopy(v, memo))
+        return result
 
     def __add__(self, other: Union[InputType, 'AbstractMeasurand']):
 
@@ -296,7 +291,7 @@ class AbstractMeasurand(ABC):
         use_std = False
         if isinstance(other, self.__class__):
             normalized_other = other
-        elif type(other) in self.InputType:
+        elif isinstance(other, self.InputType):
             normalized_other = self.__class__(other)
         else:
             raise TypeError('Invalid other type.')
@@ -411,8 +406,8 @@ class AbstractMeasurand(ABC):
         value = self.val  # Main data array
 
         # Convert thresholds to arrays, replacing None with -inf/inf for proper broadcasting
-        lower = self.lib.array([l if l is not None else -cnp.inf for l in lower], dtype=value.dtype)
-        upper = self.lib.array([u if u is not None else cnp.inf for u in upper], dtype=value.dtype)
+        lower = self.lib.array([l if l is not None else -self.lib.inf for l in lower], dtype=value.dtype)
+        upper = self.lib.array([u if u is not None else self.lib.inf for u in upper], dtype=value.dtype)
 
         # Reshape thresholds to match the dependent dimensions
         # Example: If self.value.shape = (height, width, channels), reshape to (1, 1, channels)
@@ -654,8 +649,8 @@ class AbstractMeasurand(ABC):
         rel_std = None
 
         if use_std:
-            abs_std = cnp.sqrt(x_std ** 2 + (multiplier * y_std) ** 2)
-            rel_std = cnp.sqrt((x_std / (multiplier * y_val)) ** 2 + ((y_std * x_val) / (multiplier * y_val ** 2)) ** 2)
+            abs_std = cls.lib.sqrt(x_std ** 2 + (multiplier * y_std) ** 2)
+            rel_std = cls.lib.sqrt((x_std / (multiplier * y_val)) ** 2 + ((y_std * x_val) / (multiplier * y_val ** 2)) ** 2)
 
         return cls(abs_diff, abs_std), cls(rel_diff, rel_std)
 
@@ -681,7 +676,7 @@ class AbstractMeasurand(ABC):
         else:
             x1_std = x1.std
 
-        res_std = cnp.sqrt(x0_std * ((y1 - y) / (y1 - y0)) ** 2 + x1_std * ((y - y0) / (y1 - y0)) ** 2)
+        res_std = cls.lib.sqrt(x0_std * ((y1 - y) / (y1 - y0)) ** 2 + x1_std * ((y - y0) / (y1 - y0)) ** 2)
 
         return cls(res, res_std)
 
