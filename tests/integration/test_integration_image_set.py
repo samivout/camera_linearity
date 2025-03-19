@@ -1,11 +1,7 @@
 import time
 import pytest
 from image_set import ImageSet
-
-from cupy_wrapper import get_array_libraries
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+from conftest import USE_CUPY, xp
 
 
 @pytest.fixture
@@ -30,7 +26,7 @@ def random_array(request):
         raise ValueError("min_value must be less than max_value.")
 
     # Generate the random array in the specified range
-    random_values = cnp.random.rand(*shape)
+    random_values = xp.random.rand(*shape)
     scaled_values = random_values * (max_value - min_value) + min_value
     return scaled_values
 
@@ -43,8 +39,8 @@ class TestImageSetInitialization:
         stds = random_array * 0.1
 
         image_set = ImageSet(value=values, std=stds)
-        assert cnp.all(image_set.measurand.val == values)
-        assert cnp.all(image_set.measurand.std == stds)
+        assert xp.all(image_set.measurand.val == values)
+        assert xp.all(image_set.measurand.std == stds)
 
 
 class TestImageSetIO:
@@ -62,11 +58,11 @@ class TestImageSetIO:
         time.sleep(2)
 
         other_image_set = ImageSet(file_path=full_path)
-        other_image_set.load_value_image(bit64=False, use_cupy=using_cupy)
-        other_image_set.load_std_image(bit64=False, use_cupy=using_cupy)
+        other_image_set.load_value_image(bit64=False)
+        other_image_set.load_std_image(bit64=False)
 
-        assert cnp.allclose(image_set.measurand.val, other_image_set.measurand.val, atol=0.5/255)
-        assert cnp.allclose(image_set.measurand.std, other_image_set.measurand.std)
+        assert xp.allclose(image_set.measurand.val, other_image_set.measurand.val, atol=0.5/255)
+        assert xp.allclose(image_set.measurand.std, other_image_set.measurand.std)
 
     @pytest.mark.parametrize("random_array", [{"shape": (100, 100, 3)}], indirect=True)
     def test_imageset_save_and_load_64bit(self, random_array, tmp_path):
@@ -81,8 +77,8 @@ class TestImageSetIO:
         time.sleep(2)
 
         other_image_set = ImageSet(file_path=full_path)
-        other_image_set.load_value_image(bit64=True, use_cupy=using_cupy)
-        other_image_set.load_std_image(bit64=True, use_cupy=using_cupy)
+        other_image_set.load_value_image(bit64=True)
+        other_image_set.load_std_image(bit64=True)
 
-        assert cnp.allclose(image_set.measurand.val, other_image_set.measurand.val)
-        assert cnp.allclose(image_set.measurand.std, other_image_set.measurand.std)
+        assert xp.allclose(image_set.measurand.val, other_image_set.measurand.val)
+        assert xp.allclose(image_set.measurand.std, other_image_set.measurand.std)

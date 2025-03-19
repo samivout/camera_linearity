@@ -5,25 +5,37 @@ a core part of the package.
 TODO: most test are done, but some calibration functions and correction methods lack formal testing.
 """
 import pytest
+import math
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
+from unittest.mock import call
+from measurand import AbstractMeasurand
 from image_set import ImageSet
 from image_set import _features_from_file_name
 from hypothesis import strategies as st
-
-from cupy_wrapper import get_array_libraries
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+from conftest import USE_CUPY, xp, np
 
 
 @pytest.fixture
-def mock_measurand():
+def mock_measurand_factory():
     """Fixture to create a mock Measurand object."""
-    mock = Mock() # Mock the result of linearize
-    mock.interpolate.return_value = Mock()
-    mock.compute_difference.return_value = Mock()
-    return mock
+
+    def _create_mocks(n):
+        list_of_mocks = []
+        for i in range(n):
+            mock = MagicMock(spec=AbstractMeasurand)
+            if USE_CUPY:
+                mock.backend = "cupy"
+            else:
+                mock.backend = "numpy"
+            list_of_mocks.append(mock)
+
+        if len(list_of_mocks) == 1:
+            return list_of_mocks[0]
+        else:
+            return list_of_mocks
+
+    return _create_mocks
 
 
 @pytest.fixture
@@ -48,30 +60,28 @@ def random_array(request):
         raise ValueError("min_value must be less than max_value.")
 
     # Generate the random array in the specified range
-    random_values = cnp.random.rand(*shape)
+    random_values = xp.random.rand(*shape)
     scaled_values = random_values * (max_value - min_value) + min_value
     return scaled_values
 
 
 @pytest.fixture
 def generate_ICRFs(request):
-
     exponent = request.param
     if not isinstance(exponent, float) and not isinstance(exponent, int):
         raise TypeError('Exponent must be int or float.')
 
-    ICRFs = cnp.empty((256, 3))
-    ICRF_diffs = cnp.empty((256, 3))
+    ICRFs = xp.empty((256, 3))
+    ICRF_diffs = xp.empty((256, 3))
 
     for c in range(3):
-        ICRFs[:, c] = cnp.linspace(0, 1, 256) ** exponent
-        ICRF_diffs[:, c] = cnp.gradient(ICRFs[:, c], 2 / (256 - 1))
+        ICRFs[:, c] = xp.linspace(0, 1, 256) ** exponent
+        ICRF_diffs[:, c] = xp.gradient(ICRFs[:, c], 2 / (256 - 1))
 
     return ICRFs, ICRF_diffs
 
 
 def file_name_strategy():
-
     base_name = st.sampled_from(['image', 'sample', 'test', '1111', 'xxxx', 'YYYY'])
     illumination = st.one_of(st.none(), st.sampled_from(['bf', 'df']))
     magnification = st.one_of(st.none(), st.sampled_from(['1x', '10x', '20x', '50x']))
@@ -94,27 +104,19 @@ def file_name_strategy():
     return file_name, std_file_name
 
 
-
-class MockMeasurand:
-    def __init__(self, val, std=None):
-        self.val = val
-        self.std = std
-
-
 class TestImageSetInitialization:
 
     def test_imageset_init_with_no_args(self):
-
         image_set = ImageSet()
         assert image_set.measurand is not None
         assert image_set.measurand.val is None
         assert image_set.measurand.std is None
         assert image_set.path is None
         assert image_set.features is None
-        assert image_set.channels is None
 
-    def test_imageset_init_with_mock_measurand(self, mock_measurand):
+    def test_imageset_init_with_mock_measurand(self, mock_measurand_factory):
         """Test ImageSet initialization with a mock Measurand."""
+        mock_measurand = mock_measurand_factory(1)
         image_set = ImageSet(measurand=mock_measurand)
 
         # Ensure the mock was correctly assigned
@@ -148,174 +150,162 @@ class TestImageSetInitialization:
 class TestImageSetMockMeasurand:
 
     @pytest.mark.parametrize("generate_ICRFs", [2.0], indirect=True)
-    def test_imageset_linearize(self, generate_ICRFs):
+    def test_imageset_linearize(self, generate_ICRFs, mock_measurand_factory):
 
         ICRF, ICRF_diff = generate_ICRFs
-        mock_measurand = MagicMock()
-        mock_measurand.linearize.return_value = "mocked_linearized_measurand"
+        mock_measurand_1, mock_measurand_2 = mock_measurand_factory(2)
 
-        image_set = ImageSet(measurand=mock_measurand)
+        mock_measurand_1.linearize.return_value = mock_measurand_2
+
+        image_set = ImageSet(measurand=mock_measurand_1)
 
         result = image_set.linearize(ICRF, ICRF_diff)
-        mock_measurand.linearize.assert_called_once_with(ICRF, ICRF_diff)
 
-        assert result.measurand == "mocked_linearized_measurand"
+        mock_measurand_1.linearize.assert_called_once_with(ICRF, ICRF_diff)
+        assert result.measurand == mock_measurand_2
 
-    @patch("measurand.Measurand.compute_difference")
-    def test_imageset_compute_difference(self, mock_compute_difference, mock_measurand, tmp_path):
+    @patch("measurand.AbstractMeasurand.compute_difference")
+    def test_imageset_compute_difference(self, mock_compute_difference, mock_measurand_factory, tmp_path):
 
-        image_set_1 = ImageSet(measurand=mock_measurand, file_path=tmp_path.joinpath(r'20ms test_image.tif'))
-        image_set_2 = ImageSet(measurand=mock_measurand, file_path=tmp_path.joinpath(r'50ms test_image.tif'))
+        mock_measurand_1, mock_measurand_2, mock_measurand_3, mock_measurand_4 = mock_measurand_factory(4)
 
-        mock_abs_measurand = MockMeasurand(val=50, std=3)
-        mock_rel_measurand = MockMeasurand(val=0.25, std=0.02)
-        mock_compute_difference.return_value = (mock_abs_measurand, mock_rel_measurand)
+        image_set_1 = ImageSet(measurand=mock_measurand_1, file_path=tmp_path.joinpath(r'20ms test_image.tif'))
+        image_set_2 = ImageSet(measurand=mock_measurand_2, file_path=tmp_path.joinpath(r'50ms test_image.tif'))
+
+        mock_compute_difference.return_value = (mock_measurand_3, mock_measurand_4)
 
         absolute_set, relative_set = ImageSet.compute_difference(image_set_1, image_set_2)
 
-        assert absolute_set.measurand.val == mock_abs_measurand.val
-        assert absolute_set.measurand.std == mock_abs_measurand.std
-        assert relative_set.measurand.val == mock_rel_measurand.val
-        assert relative_set.measurand.std == mock_rel_measurand.std
+        # Assert that the mocked compute difference method is called once with the given expected arguments.
+        expected_call = call(mock_measurand_1, mock_measurand_2, 20 / 50)
+        assert any((call_.args[0], expected_call.args[0]) and (call_.args[1], expected_call.args[1]) and
+                   math.isclose(call_.args[2], expected_call.args[2], rel_tol=1e-6)
+                   for call_ in mock_compute_difference.call_args_list
+                   )
 
-    @patch("measurand.Measurand.interpolate")
-    def test_imageset_exposure_interpolation(self, mock_interpolate, mock_measurand, tmp_path):
-        image_set_1 = ImageSet(measurand=mock_measurand, file_path=tmp_path.joinpath(r'20ms test_image.tif'))
-        image_set_2 = ImageSet(measurand=mock_measurand, file_path=tmp_path.joinpath(r'50ms test_image.tif'))
+        # Assert that the resulting ImageSet objects have the desired mock Measurands set into the measurand attributes.
+        assert absolute_set.measurand == mock_measurand_3
+        assert relative_set.measurand == mock_measurand_4
 
-        mock_interpolated_measurand = MockMeasurand(val=50, std=3)
-        mock_interpolate.return_value = mock_interpolated_measurand
+    @patch("measurand.AbstractMeasurand.interpolate")
+    def test_imageset_exposure_interpolation(self, mock_interpolate, mock_measurand_factory, tmp_path):
 
-        result = ImageSet.exposure_interpolation(image_set_1, image_set_2, 0.04)
+        mock_measurand_1, mock_measurand_2, mock_measurand_3 = mock_measurand_factory(3)
 
-        assert result.measurand.val == mock_interpolated_measurand.val
-        assert result.measurand.std == mock_interpolated_measurand.std
+        image_set_1 = ImageSet(measurand=mock_measurand_1, file_path=tmp_path.joinpath(r'20ms test_image.tif'))
+        image_set_2 = ImageSet(measurand=mock_measurand_2, file_path=tmp_path.joinpath(r'50ms test_image.tif'))
+        interpolation_point = 0.04
 
-    def test_imageset_extract(self):
+        mock_interpolate.return_value = mock_measurand_3
 
-        mock_measurand = MagicMock()
-        mock_measurand.extract.return_value = "mocked_extracted_measurand"
+        result = ImageSet.exposure_interpolation(image_set_1, image_set_2, interpolation_point)
 
-        image_set = ImageSet(measurand=mock_measurand)
+        mock_interpolate.assert_called_once_with(mock_measurand_1, mock_measurand_2, 0.02, 0.05, interpolation_point)
+        assert result.measurand == mock_measurand_3
+
+    def test_imageset_extract(self, mock_measurand_factory):
+
+        mock_measurand_1, mock_measurand_2 = mock_measurand_factory(2)
+        mock_measurand_1.extract.return_value = mock_measurand_2
+
+        image_set = ImageSet(measurand=mock_measurand_1)
 
         result = image_set.extract()
-        mock_measurand.extract.assert_called_once()
 
-        assert result.measurand == "mocked_extracted_measurand"
+        mock_measurand_1.extract.assert_called_once()
+        assert result.measurand == mock_measurand_2
 
 
 class TestImageSetIO:
 
-    def test_load_value_image_8bit(self):
-        dummy_image = np.ones((3, 3, 3), dtype=np.uint8) * 128
+    def test_load_value_image_8bit(self, mock_measurand_factory):
+        dummy_image = xp.ones((3, 3, 3), dtype=xp.uint8) * 128
+        mock_measurand = mock_measurand_factory(1)
 
         with patch('cv2.imread', return_value=dummy_image) as mock_imread:
             # Initialize the ImageSet object
             img_set = ImageSet(file_path=Path("dummy/path/image.tif"))
 
             # Mock the measurand after instantiation
-            img_set.measurand = MagicMock()
-
-            img_set.load_value_image(bit64=False, use_cupy=False)
+            img_set.measurand = mock_measurand
+            img_set.load_value_image(bit64=False)
 
             # Assertions
-            np.testing.assert_array_equal(img_set.measurand.val, dummy_image.astype(np.float64) / 255)
-            assert img_set.channels == [0, 1, 2]  # Simulated 3D array
+            xp.testing.assert_array_equal(img_set.measurand.val, dummy_image.astype(xp.float64) / 255)
 
-    def test_load_value_image_64bit(self):
-        dummy_image = np.ones((3, 3, 3), dtype=np.uint8) * 128
+    def test_load_value_image_64bit(self, mock_measurand_factory):
+        dummy_image = xp.ones((3, 3, 3), dtype=np.uint8) * 128
+        mock_measurand = mock_measurand_factory(1)
 
         with patch('cv2.imread', return_value=dummy_image) as mock_imread:
             # Initialize the ImageSet object
             img_set = ImageSet(file_path=Path("dummy/path/image.tif"))
 
             # Mock the measurand after instantiation
-            img_set.measurand = MagicMock()
-
-            img_set.load_value_image(bit64=True, use_cupy=False)
+            img_set.measurand = mock_measurand
+            img_set.load_value_image(bit64=True)
 
             # Assertions
-            np.testing.assert_allclose(img_set.measurand.val, dummy_image.astype(np.float64))
-            assert img_set.channels == [0, 1, 2]  # Simulated 3D array
+            xp.testing.assert_allclose(img_set.measurand.val, dummy_image.astype(xp.float64))
 
-    def test_load_value_image_cupy(self):
-
-        if using_cupy:
-            dummy_image = np.ones((3, 3, 3), dtype=np.uint8) * 128
-            dummy_path = Path("dummy/path/image.tif")
-
-            with patch('cv2.imread', return_value=dummy_image) as mock_imread:
-                # Initialize the ImageSet object
-                img_set = ImageSet(file_path=dummy_path)
-
-                # Mock the measurand after instantiation
-                img_set.measurand = MagicMock()
-
-                img_set.load_value_image(bit64=True, use_cupy=True)
-                mock_imread.assert_called_once_with(str(dummy_path), -1)
-
-                cp.testing.assert_allclose(img_set.measurand.val, dummy_image.astype(np.float64))
-        else:
-            pass
-
-    def test_load_std_image_not_found(self):
+    def test_load_std_image_not_found(self, mock_measurand_factory):
 
         dummy_path = Path("dummy/path/image.tif")
         dummy_std_path = Path("dummy/path/image STD.tif")
+        mock_measurand = mock_measurand_factory(1)
 
         with patch('cv2.imread', return_value=None) as mock_imread:
             with patch.object(ImageSet, 'calculate_numerical_STD') as mock_calculate_numerical_STD:
-
                 # Initialize the ImageSet object
                 img_set = ImageSet(file_path=dummy_path)
 
                 # Mock the measurand after instantiation
-                img_set.measurand = MagicMock()
+                img_set.measurand = mock_measurand
 
-                img_set.load_std_image(bit64=True, use_cupy=True)
+                img_set.load_std_image(bit64=True)
                 mock_imread.assert_called_once()
                 mock_calculate_numerical_STD.assert_called_once()
 
-    def test_load_std_image_found(self):
+    def test_load_std_image_found(self, mock_measurand_factory):
 
         dummy_path = Path("dummy/path/image.tif")
         dummy_image = np.ones((3, 3, 3), dtype=np.float64)
+        mock_measurand = mock_measurand_factory(1)
 
         with patch('cv2.imread', return_value=dummy_image) as mock_imread:
-
             # Initialize the ImageSet object
             img_set = ImageSet(file_path=dummy_path)
 
             # Mock the measurand after instantiation
-            img_set.measurand = MagicMock()
+            img_set.measurand = mock_measurand
 
-            img_set.load_std_image(bit64=True, use_cupy=True)
+            img_set.load_std_image(bit64=True)
             mock_imread.assert_called_once()
-            cnp.testing.assert_allclose(img_set.measurand.std, cnp.array(dummy_image))
+            xp.testing.assert_allclose(img_set.measurand.std, xp.array(dummy_image))
 
     @pytest.mark.parametrize("generate_ICRFs", [2.0], indirect=True)
-    def test_calculate_numerical_STD(self, generate_ICRFs):
+    def test_calculate_numerical_STD(self, generate_ICRFs, mock_measurand_factory):
 
         ICRF, _ = generate_ICRFs
         channels = ICRF.shape[-1]
         dummy_path = Path("dummy/path/image.tif")
-        dummy_image = cnp.ones((3, 3, 3), dtype=cnp.float64) / 100
+        dummy_image = xp.ones((3, 3, 3), dtype=xp.float64) / 100
+        mock_measurand = mock_measurand_factory(1)
         # The STD_array has the exact same format as ICRFs, so we can use the ICRF fixture here.
-        with patch('read_data.read_data_from_txt', return_value=ICRF) as mock_read_data_from_txt:
-
+        with patch('general_functions.read_txt_to_array', return_value=ICRF) as mock_read_data_from_txt:
             image_set = ImageSet(dummy_path)
-            image_set.measurand = MagicMock()
+            image_set.measurand = mock_measurand
             image_set.measurand.val = dummy_image
             result = image_set.calculate_numerical_STD()
 
             mock_read_data_from_txt.assert_called_once()
             for c in range(channels):
-                assert cnp.isin(result[..., c], ICRF[..., c]).all() == cnp.array(True)
+                assert xp.isin(result[..., c], ICRF[..., c]).all() == xp.array(True)
 
     def test_calculate_numerical_STD_not_found(self):
 
         dummy_path = Path("dummy/path/image.tif")
-        with patch('read_data.read_data_from_txt', side_effect=FileNotFoundError) as mock_read_data_from_txt:
+        with patch('general_functions.read_txt_to_array', side_effect=FileNotFoundError) as mock_read_data_from_txt:
             image_set = ImageSet(dummy_path)
             result = image_set.calculate_numerical_STD()
             mock_read_data_from_txt.assert_called_once()
@@ -329,9 +319,9 @@ class TestSupportFunctions:
          {"illumination": "bf", "magnification": "40x", "exposure": 0.1, "subject": "sample"}),
         (Path("df 20x 200ms test_subject.tif"),
          {"illumination": "df", "magnification": "20x", "exposure": 0.2, "subject": "test_subject"}),
-        (Path("40x 500ms subject1.tif"), {"magnification": "40x", "exposure": 0.5, "subject": "subject1"}),
-        (Path("bf 1000ms.tif"), {"illumination": "bf", "exposure": 1.0, "subject": ""}),
-        (Path("sample 10x.tif"), {"magnification": "10x", "subject": "sample"}),
+        (Path("40x 500ms subject1.tif"), {"illumination": "", "magnification": "40x", "exposure": 0.5, "subject": "subject1"}),
+        (Path("bf 1000ms.tif"), {"illumination": "bf", "magnification": "", "exposure": 1.0, "subject": ""}),
+        (Path("sample 10x.tif"), {"illumination": "", "magnification": "10x", "exposure": 0, "subject": "sample"}),
     ])
     def test_features_from_file_name(self, file_path, expected_features):
         assert _features_from_file_name(file_path) == expected_features

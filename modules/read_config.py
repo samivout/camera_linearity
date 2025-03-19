@@ -1,14 +1,8 @@
 """
-Module for reading data from .ini files and .txt files. Handles all the read operations outside of ImageSet.
+Module for reading data from .ini files and .txt files. Handles all the read operations outside ImageSet.
 """
 import configparser
-from typing import Optional
 from pathlib import Path
-
-from cupy_wrapper import get_array_libraries
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
 
 current_directory = Path(__file__).parent.resolve()
 root_directory = current_directory.parent
@@ -71,30 +65,6 @@ def read_config_single(key):
                 single_item = int(single_item)
 
     return single_item
-
-
-def read_data_from_txt(file_name: str, path: Optional[str] = None, use_cupy: Optional[bool] = True):
-    """
-    Load numerical data from a .txt file of given name. Defaults to data
-    directory but optionally can use other paths.
-
-    Args:
-        file_name: name of the file to load.
-        path: path to the file, optional.
-
-    Returns: numpy array of the txt file.
-    """
-    if path is None:
-        load_path = data_directory
-    else:
-        load_path = Path(path)
-
-    if use_cupy and using_cupy:
-        data_array = cp.loadtxt(load_path.joinpath(file_name), dtype=float)
-    else:
-        data_array = np.loadtxt(load_path.joinpath(file_name), dtype=float)
-
-    return data_array
 
 
 if __name__ == "__main__":

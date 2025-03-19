@@ -4,11 +4,7 @@ from hypothesis import strategies as st
 from typing import Optional
 
 from modules import general_functions as gf
-
-from cupy_wrapper import get_array_libraries
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+from conftest import USE_CUPY, xp
 
 
 @given(
@@ -41,14 +37,8 @@ def test_is_broadcastable(shape1, shape2):
     assert result
 
 
-@given(
-    lower_limit=st.one_of(st.none(), st.integers()),
-    upper_limit=st.one_of(st.none(), st.integers()),
-    ICRF=st.from_type(Optional[cnp.ndarray]),
-)
-def test_fuzz_map_linearity_limits(
-    lower_limit: Optional[int],
-    upper_limit: Optional[int],
-    ICRF: Optional[cnp.ndarray],
-) -> None:
+@given(lower_limit=st.one_of(st.none(), st.integers()), upper_limit=st.one_of(st.none(), st.integers()),
+       ICRF=st.from_type(Optional[xp.ndarray]))
+def test_fuzz_map_linearity_limits(lower_limit: Optional[int], upper_limit: Optional[int], ICRF: Optional[xp.ndarray]):
+    # TODO: this test needs to be looked into.
     gf.map_linearity_limits(lower_limit=lower_limit, upper_limit=upper_limit, ICRF=ICRF)

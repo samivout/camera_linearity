@@ -5,6 +5,7 @@ import numpy as np
 import cv2 as cv
 import general_functions as gf
 from typing import Optional, List, Union
+from pathlib import Path
 from global_settings import GlobalSettings as gs
 
 
@@ -146,10 +147,10 @@ def process_STD_data(pass_result: Optional[bool] = True):
     for i in range(len(gs.MEAN_DATA_FILES)):
 
         mean_file_name = gs.MEAN_DATA_FILES[i]
-        mean_data_array[:, :, i] = rd.read_data_from_txt(mean_file_name)
+        mean_data_array[:, :, i] = gf.read_txt_to_array(mean_file_name)
         STD_data[:, i] = _calculate_STD(mean_data_array[:, :, i])
 
-    np.savetxt(data_directory.joinpath(gs.STD_FILE_NAME), STD_data)
+    np.savetxt(gs.DATA_PATH.joinpath(gs.STD_FILE_NAME), STD_data)
 
     if pass_result:
         return STD_data

@@ -5,18 +5,16 @@ values at the same position in a stack of images captured at different exposure 
 """
 from pathlib import Path
 from scipy.optimize._differentialevolution import DifferentialEvolutionSolver # Accessed to enable manual interrupt.
+
+import general_functions
 from image_set import ImageSet
-from exposure_series import ExposureSeries
 import general_functions as gf
 from typing import Optional
 from joblib import delayed, parallel
 from global_settings import GlobalSettings as gs
-import read_data as rd
 
-from cupy_wrapper import get_array_libraries
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+from array_wrapper import np, cp, CUPY_AVAILABLE
+xp = np
 
 
 def _inverse_camera_response_function(mean_ICRF, PCA_array, PCA_params, use_mean_ICRF):
@@ -34,19 +32,19 @@ def _inverse_camera_response_function(mean_ICRF, PCA_array, PCA_params, use_mean
         The new iteration of the inverse camera response function.
     """
     if isinstance(PCA_params, np.ndarray):
-        temp = cnp.asarray(PCA_params)
+        temp = xp.asarray(PCA_params)
     if not use_mean_ICRF:
-        mean_ICRF = cnp.linspace(0, 1, gs.BITS) ** temp[0]
-        product = cnp.matmul(PCA_array, temp[1:])
+        mean_ICRF = xp.linspace(0, 1, gs.BITS) ** temp[0]
+        product = xp.matmul(PCA_array, temp[1:])
     else:
-        product = cnp.matmul(PCA_array, temp)
+        product = xp.matmul(PCA_array, temp)
 
     iterated_ICRF = mean_ICRF + product
 
     return iterated_ICRF
 
 
-def weighted_avg_and_std(values: cnp.ndarray, weights: cnp.ndarray):
+def weighted_avg_and_std(values: xp.ndarray, weights: xp.ndarray):
     """
     Computes the weighted average of an array, while rejecting non-finite values.
     Args:
@@ -56,11 +54,11 @@ def weighted_avg_and_std(values: cnp.ndarray, weights: cnp.ndarray):
     Returns:
         The weighted average.
     """
-    finite_indices = cnp.logical_and(cnp.isfinite(values), weights != 0)
-    if not cnp.any(finite_indices):
-        return cnp.nan
+    finite_indices = xp.logical_and(xp.isfinite(values), weights != 0)
+    if not xp.any(finite_indices):
+        return xp.nan
     weights = 1 / weights[finite_indices]
-    average = cnp.average(values[finite_indices], weights=weights)
+    average = xp.average(values[finite_indices], weights=weights)
 
     return average
 
@@ -70,11 +68,12 @@ def analyze_linearity(image_value_stack, image_std_stack, lower: int, upper: int
     """
     Analyze the linearity of images taken at different exposures.
     Args:
-        list_of_exposure_series: Optionally pass input_images from previous calculations.
+        image_value_stack: input value images stacked into a single array.
+        image_std_stack: input std images stacked into a single array.
         use_relative: whether to utilize relative or absolute pixel values.
-        lower:
-        upper:
-        use_std:
+        lower: threshold below which values are ignored in analysis.
+        upper: threshold above which values are ignored in analysis.
+        exposure_values: list of the exposure values associated with each input image.
 
     Returns:
         An array consisting of the results of the linearity analysis.
@@ -91,23 +90,23 @@ def analyze_linearity(image_value_stack, image_std_stack, lower: int, upper: int
 
     # Dimensions
     X, Y, N = image_value_stack.shape
-    pair_indices = cnp.triu_indices(N, k=1)
-    ignored_indices = cnp.tril_indices(N, k=0)
+    pair_indices = xp.triu_indices(N, k=1)
+    ignored_indices = xp.tril_indices(N, k=0)
 
     # Mask values outside the threshold
     mask = (image_value_stack < lower) | (image_value_stack > upper)
-    masked_stack = cnp.where(mask, cnp.nan, image_value_stack)
+    masked_stack = xp.where(mask, xp.nan, image_value_stack)
 
     # Compute exposure ratios for all pairs (N, N)
     exposure_ratios = exposure_values[:, None] / exposure_values[None, :]
-    exposure_ratios[ignored_indices] = cnp.nan
+    exposure_ratios[ignored_indices] = xp.nan
 
     # Expand ratios to match image dimensions: (X, Y, N, N)
-    ratio_stack = cnp.expand_dims(exposure_ratios, axis=(0, 1))
+    ratio_stack = xp.expand_dims(exposure_ratios, axis=(0, 1))
 
     # Broadcast the image stack for pairwise operations: (X, Y, N, N)
-    image_stack_i = cnp.expand_dims(masked_stack, axis=3)
-    image_stack_j = cnp.expand_dims(masked_stack, axis=2)
+    image_stack_i = xp.expand_dims(masked_stack, axis=3)
+    image_stack_j = xp.expand_dims(masked_stack, axis=2)
 
     # Compute scaled images
     scaled_image = image_stack_j * ratio_stack
@@ -119,25 +118,25 @@ def analyze_linearity(image_value_stack, image_std_stack, lower: int, upper: int
         linear_measurand /= scaled_image
 
     # Compute absolute differences: (X, Y, N, N)
-    abs_differences = cnp.abs(linear_measurand)
+    abs_differences = xp.abs(linear_measurand)
 
     if use_std:
-        image_std_stack_i = cnp.expand_dims(image_std_stack, axis=3)
-        image_std_stack_j = cnp.expand_dims(image_std_stack, axis=2)
+        image_std_stack_i = xp.expand_dims(image_std_stack, axis=3)
+        image_std_stack_j = xp.expand_dims(image_std_stack, axis=2)
 
         if use_relative:
-            linear_measurand_std = cnp.sqrt((image_std_stack_i / scaled_image) ** 2 + ((image_stack_i * image_std_stack_j) / (ratio_stack * image_stack_j ** 2) ) ** 2)
+            linear_measurand_std = xp.sqrt((image_std_stack_i / scaled_image) ** 2 + ((image_stack_i * image_std_stack_j) / (ratio_stack * image_stack_j ** 2) ) ** 2)
         else:
-            linear_measurand_std = cnp.sqrt(image_std_stack_i ** 2 + (ratio_stack * image_std_stack_j) ** 2)
+            linear_measurand_std = xp.sqrt(image_std_stack_i ** 2 + (ratio_stack * image_std_stack_j) ** 2)
 
     # Average differences across spatial dimensions: (N, N)
     if use_std:
-        finite_indices = cnp.logical_and(cnp.isfinite(abs_differences), linear_measurand_std != 0)
-        weights = cnp.where(finite_indices, 1 / linear_measurand_std, cnp.nan)
+        finite_indices = xp.logical_and(xp.isfinite(abs_differences), linear_measurand_std != 0)
+        weights = xp.where(finite_indices, 1 / linear_measurand_std, xp.nan)
         results = gf.nanaverage(abs_differences, weights, axis=(0, 1))
 
     else:
-        results = cnp.nanmean(abs_differences, axis=(0, 1))
+        results = xp.nanmean(abs_differences, axis=(0, 1))
 
     # Return the upper triangle of the results matrix as a 1D array
 
@@ -170,14 +169,14 @@ def _energy_function(PCA_params, mean_ICRF, PCA_array, image_value_stack, image_
 
     if use_std:
         dx = 2 / (gs.BITS - 1)
-        ICRF_diff_ch = cnp.gradient(ICRF_ch, dx)
+        ICRF_diff_ch = xp.gradient(ICRF_ch, dx)
 
-    if cnp.max(ICRF_ch) > 1 or cnp.min(ICRF_ch) < 0:
-        energy = cnp.inf
+    if xp.max(ICRF_ch) > 1 or xp.min(ICRF_ch) < 0:
+        energy = xp.inf
         return energy
 
-    if not cnp.all(ICRF_ch[1:] > ICRF_ch[:-1]):
-        energy = cnp.inf
+    if not xp.all(ICRF_ch[1:] > ICRF_ch[:-1]):
+        energy = xp.inf
         return energy
 
     mapped_lower = ICRF_ch[lower]
@@ -194,42 +193,11 @@ def _energy_function(PCA_params, mean_ICRF, PCA_array, image_value_stack, image_
     linearity_data = analyze_linearity(iterated_image_value_stack, iterated_image_std_stack, mapped_lower,
                                        mapped_upper, True, exposure_values)
 
-    energy = cnp.nanmean(linearity_data)
-    if cnp.isnan(energy):
-        energy = cnp.Inf
+    energy = xp.nanmean(linearity_data)
+    if xp.isnan(energy):
+        energy = xp.inf
 
     energy = float(energy)
-    return energy
-
-
-def _initial_energy_function(x, list_of_exposure_series, channel, lower, upper):
-    """
-    Function for evaluating the energy function at the initial conditions of the optimization
-    process.
-    Args:
-        x:
-        list_of_exposure_series:
-        channel:
-
-    Returns:
-
-    """
-    initial_function = cnp.linspace(0, 1, gs.BITS) ** x
-    dx = 2 / (gs.BITS - 1)
-    initial_function_diff = cnp.gradient(initial_function, dx)
-
-    list_of_single_channel_exposure_series = []
-    exposure_series: ExposureSeries
-    for exposure_series in list_of_exposure_series:
-        current_series = exposure_series.extract(channel)
-        current_series = current_series.linearize(initial_function, initial_function_diff)
-        list_of_single_channel_exposure_series.append(current_series)
-
-    linearity_data = analyze_linearity(list_of_single_channel_exposure_series, lower, upper, use_relative=True)
-    energy = cnp.nanmean(linearity_data)
-    if cnp.isnan(energy):
-        energy = cnp.Inf
-
     return energy
 
 
@@ -237,13 +205,13 @@ def interpolate_ICRF(ICRF_array):
     if gs.BITS == gs.DATAPOINTS:
         return ICRF_array
 
-    x_new = cnp.linspace(0, 1, num=gs.BITS)
-    x_old = cnp.linspace(0, 1, num=gs.DATAPOINTS)
-    interpolated_ICRF = cnp.zeros((gs.BITS, gs.NUM_OF_CHS), dtype=float)
+    x_new = xp.linspace(0, 1, num=gs.BITS)
+    x_old = xp.linspace(0, 1, num=gs.DATAPOINTS)
+    interpolated_ICRF = xp.zeros((gs.BITS, gs.NUM_OF_CHS), dtype=float)
 
     for c in range(gs.NUM_OF_CHS):
         y_old = ICRF_array[:, c]
-        interpolated_ICRF[:, c] = cnp.interp(x_new, x_old, y_old)
+        interpolated_ICRF[:, c] = xp.interp(x_new, x_old, y_old)
 
     return interpolated_ICRF
 
@@ -285,11 +253,11 @@ def initialize_channel_image_stacks(image_path: Path, use_std: bool, data_spacin
     print(f'Original elements: {original_number_of_elements}, Final elements: {final_number_of_elements}, '
           f'ratio: {final_number_of_elements / original_number_of_elements}')
 
-    channel_image_value_stacks = [cnp.empty((final_rows, final_cols, number_of_images),
+    channel_image_value_stacks = [xp.empty((final_rows, final_cols, number_of_images),
                                             dtype=first_image.measurand.val[0].dtype) for _ in range(channels)]
 
     if use_std:
-        channel_image_std_stacks = [cnp.empty((final_rows, final_cols, number_of_images),
+        channel_image_std_stacks = [xp.empty((final_rows, final_cols, number_of_images),
                                               dtype=first_image.measurand.std[0].dtype) for _ in range(channels)]
     else:
         channel_image_std_stacks = [None for _ in range(channels)]
@@ -312,7 +280,7 @@ def initialize_channel_image_stacks(image_path: Path, use_std: bool, data_spacin
         del image_set.measurand.val
         del image_set.measurand.std
 
-    exposure_values = cnp.array(exposure_values)
+    exposure_values = xp.array(exposure_values)
 
     return channel_image_value_stacks, channel_image_std_stacks, exposure_values
 
@@ -324,7 +292,8 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
                 use_std: Optional[bool] = False,
                 image_path: Optional[Path] = gs.DEFAULT_IMG_SRC_PATH,
                 energy_limit: Optional[float] = 0,
-                rng_seed: Optional[int] = 7):
+                rng_seed: Optional[int] = 7,
+                use_cupy: Optional[bool] = False):
     """ The main function running the ICRF calibration process that is called
     from outside the module.
 
@@ -338,15 +307,20 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
            image_path: the path from which to utilize images in the calibration process.
            energy_limit: limit for the energy function value at which to stop the iteration. Defaults to zero.
            rng_seed: the seed of the solver if one needs consistent operation. Use none for random process.
+           use_cupy: whether to use CuPy or NumPy.
 
        Return:
             ICRF_array: a Numpy float array containing the optimized ICRFs of each channel.
             initial_energy_array: a Numpy float array containing the initial energies of each channel.
             final_energy_array: a Numpy float array containing the final energies of each channel.
        """
-    ICRF = cp.zeros((gs.DATAPOINTS, gs.NUM_OF_CHS), dtype=float)
-    final_energy_array = cp.zeros(gs.NUM_OF_CHS, dtype=float)
-    initial_energy_array = cp.zeros(gs.NUM_OF_CHS, dtype=float)
+    global xp
+    if use_cupy and CUPY_AVAILABLE:
+        xp = cp
+
+    ICRF = xp.zeros((gs.DATAPOINTS, gs.NUM_OF_CHS), dtype=float)
+    final_energy_array = xp.zeros(gs.NUM_OF_CHS, dtype=float)
+    initial_energy_array = xp.zeros(gs.NUM_OF_CHS, dtype=float)
 
     limits = []
     x0 = []
@@ -367,9 +341,9 @@ def calibration(lower_PCA_limit: float, upper_PCA_limit: float,
     def solve_channel(PCA_file_name: str, mean_ICRF_file_name: str, channel: int, seed,
                       image_value_stack, image_std_stack, exposure_values):
 
-        PCA_array = rd.read_data_from_txt(PCA_file_name)
+        PCA_array = general_functions.read_txt_to_array(PCA_file_name)
         if use_mean_ICRF:
-            mean_ICRF_array = rd.read_data_from_txt(mean_ICRF_file_name)
+            mean_ICRF_array = general_functions.read_txt_to_array(mean_ICRF_file_name)
         else:
             mean_ICRF_array = initial_function
 

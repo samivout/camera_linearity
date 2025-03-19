@@ -7,45 +7,99 @@ uncertainty image, it should contain a separate 'STD' descriptor in it. Only
 .tif support for now. Flat field images should have a name 'flat' in them
 and dark frames should have 'dark' in them. TODO: implement common file types.
 """
+import copy
+
 import cv2 as cv
 import re
-import math
 from pathlib import Path
-from typing import Optional, List, Dict, Type
-from cupyx.scipy.ndimage import median_filter
-from measurand import Measurand, AbstractMeasurand
-from global_settings import GlobalSettings as gs
-import read_data as rd
-from cupy_wrapper import get_array_libraries
+from typing import Optional, List, Dict
 
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+import general_functions
+from measurand import AbstractMeasurand
+from array_wrapper import ArrayType
+from measurand_factory import Measurand, measurand_to_cupy, measurand_to_numpy
+from global_settings import GlobalSettings as gs
+import numpy as np
 
 
 class ImageSet(object):
 
-    def __init__(self, file_path: Optional[str | Path] = None, value: Optional[cnp.ndarray] = None,
-                 std: Optional[cnp.ndarray] = None, features: Optional[Dict] = None,
-                 measurand: Optional[Type[AbstractMeasurand]] = None, channels: Optional[List[int]] = None):
+    def __init__(self, file_path: Optional[str | Path] = None, value: Optional[ArrayType] = None,
+                 std: Optional[ArrayType] = None, features: Optional[Dict] = None,
+                 measurand: Optional[AbstractMeasurand] = None, use_cupy: Optional[bool] = False):
 
         if isinstance(file_path, str):
             self.path = Path(file_path)
         else:
             self.path = file_path
+
+        # Measurand assignment. use_cupy parameter is overridden if a measurand parameter is given.
         if measurand is not None:
-            self.measurand = measurand
+            self._measurand = measurand
+            if measurand.backend == "numpy":
+                self._use_cupy = False
+            else:
+                self._use_cupy = True
         else:
-            self.measurand = Measurand(value, std)
+            self._measurand = Measurand(value, std, use_cupy)
+            self._use_cupy = use_cupy
+
         if features is not None:
             self.features = features
         elif file_path is not None:
             self.features = _features_from_file_name(self.path)
         else:
             self.features = None
-        self.channels = channels
         self.is_HDR = False
 
-    def linearize(self, ICRF: cnp.ndarray, ICRF_diff: Optional[cnp.ndarray] = None):
+    @property
+    def measurand(self):
+        return self._measurand
+
+    @measurand.setter
+    def measurand(self, new_measurand: AbstractMeasurand):
+
+        if self.measurand is not None:
+            if self._use_cupy:
+                expected_backend = "cupy"
+            else:
+                expected_backend = "numpy"
+
+            if new_measurand.backend == expected_backend:
+                self._measurand = new_measurand
+            else:
+                raise ValueError(f'Expected type {expected_backend}, got {type(new_measurand)} instead.')
+        else:
+            self._measurand = new_measurand
+            if new_measurand.backend == "numpy":
+                self._use_cupy = False
+            else:
+                self._use_cupy = True
+
+    @property
+    def use_cupy(self):
+        return self._use_cupy
+
+    @use_cupy.setter
+    def use_cupy(self, new_value):
+        """Read-only property, raises an error if attempting to modify."""
+        raise AttributeError("use_cupy is a read-only attribute, managing the state of the used array backend.")
+
+    def to_numpy(self):
+        """
+        Convert this ImageSet to use NumPy.
+        """
+        self._measurand = measurand_to_numpy(self.measurand)
+        self._use_cupy = False
+
+    def to_cupy(self):
+        """
+        Convert this ImageSet to use CuPy
+        """
+        self._measurand = measurand_to_cupy(self.measurand)
+        self._use_cupy = True
+
+    def linearize(self, ICRF: ArrayType, ICRF_diff: Optional[ArrayType] = None):
         """
         Calls the linearize method of the underlying Measurand class, yielding a new Measurand object with the linerized
         values. Constructs a new ImageSet object.
@@ -155,51 +209,28 @@ class ImageSet(object):
         """
         new_measurand = self.measurand.extract(dims=channels, axis=-1)
 
-        return ImageSet(file_path=self.path, features=self.features, measurand=new_measurand, channels=channels)
+        return ImageSet(file_path=self.path, features=self.features, measurand=new_measurand)
 
-    def load_value_image(self, bit64: Optional[bool] = False, use_cupy: Optional[bool] = True):
+    def load_value_image(self, bit64: Optional[bool] = False):
         """
         Load the acquired image of the ImageSet object into memory. You can specify whether to load it as an 8-bits per
-        channel image or a 64-bit float per channel image.
+        channel image or a 64-bit float per channel image. If image data already exists, doesn't do anything.
 
         Args:
             bit64: whether the image should be in 64-bit float form or not.
-            use_cupy: whether to use CuPy or NumPy arrays.
         """
-
         if not bit64:
-            self.measurand.val = cv.imread(str(self.path)).astype(np.float64) / gs.MAX_DN
+            value = cv.imread(str(self.path)).astype(np.float64) / gs.MAX_DN
         else:
-            self.measurand.val = cv.imread(str(self.path), cv.IMREAD_UNCHANGED)
-        number_of_dims = len(np.shape(self.measurand.val))
-        self.channels = list(np.arange(0, number_of_dims, step=1))
-        if use_cupy and using_cupy:
-            self.measurand.val = cp.asarray(self.measurand.val)
-            self.channels = cp.asarray(self.channels)
+            value = cv.imread(str(self.path), cv.IMREAD_UNCHANGED)
+        self.measurand.val = value
 
-    def single_channel_to_multiple(self):
-
-        value_image = cv.imread(str(self.path), cv.IMREAD_UNCHANGED).astype(np.float64)
-        if using_cupy:
-            value_image = cp.array(value_image)
-
-        number_of_dims = len(cnp.shape(value_image))
-
-        if number_of_dims == 3:
-            self.measurand.val = value_image
-        if number_of_dims == 2:
-            value_image = value_image[:, :, cnp.newaxis]
-            self.measurand.val = cnp.concatenate((value_image, value_image, value_image), axis=2)
-        self.channels = [0, 1, 2]
-
-    def load_std_image(self, STD_data: Optional[np.ndarray] = None, bit64: Optional[bool] = False,
-                       use_cupy: Optional[bool] = True):
+    def load_std_image(self, STD_data: Optional[ArrayType] = None, bit64: Optional[bool] = False):
         """
-        Loads the error image of an ImageSet object to memory.
+        Loads the error image of an ImageSet object to memory. If std data already exists, doesn't do anything.
         Args:
             bit64: whether the image to load is already in float or not
             STD_data: Numpy array representing the STD data of pixel values.
-            use_cupy: whether to use CuPy or NumPy arrays.
         """
         std_path = str(self.path).removesuffix('.tif') + ' STD.tif'
         std_array = cv.imread(std_path, cv.IMREAD_UNCHANGED)
@@ -208,9 +239,6 @@ class ImageSet(object):
 
         if std_array is None:
             return
-
-        if use_cupy and using_cupy:
-            std_array = cp.asarray(std_array)
 
         self.measurand.std = std_array
 
@@ -231,7 +259,7 @@ class ImageSet(object):
 
         new_measurand = (target_exp / exposure) * new_measurand
 
-        return ImageSet(file_path=self.path, measurand=new_measurand, features=new_features)
+        return ImageSet(file_path=self.path, features=new_features, measurand=new_measurand)
 
     def save_64bit(self, save_path: Optional[Path] = None, is_HDR: Optional[bool] = False,
                    separate_channels: Optional[bool] = False):
@@ -261,18 +289,17 @@ class ImageSet(object):
             acq_file_suffix = '.tif'
             std_file_suffix = ' STD.tif'
 
-        if isinstance(self.measurand.val, cp.ndarray):
-            acq = cp.asnumpy(self.measurand.val)
+        if self.measurand.backend == "numpy":
+            tmp_measurand = self.measurand
         else:
-            acq = self.measurand.val
-        if self.measurand.std is not None and isinstance(self.measurand.std, cp.ndarray):
-            std = cp.asnumpy(self.measurand.std)
-        else:
-            std = self.measurand.std
+            tmp_measurand = measurand_to_numpy(self.measurand)
+
+        val = tmp_measurand.val
+        std = tmp_measurand.std
 
         if not separate_channels:
 
-            bit64_image = acq.astype(np.dtype('float64'))
+            bit64_image = val.astype(np.dtype('float64'))
             cv.imwrite(file_path.removesuffix('.tif') + acq_file_suffix, bit64_image)
 
             if self.measurand.std is not None:
@@ -282,7 +309,7 @@ class ImageSet(object):
         else:
             for c in range(gs.NUM_OF_CHS):
 
-                bit64_image = acq[:, :, c]
+                bit64_image = val[:, :, c]
                 cv.imwrite(file_path.removesuffix('.tif')
                            + acq_file_suffix.replace('.tif', f' {gs.CH_NAMES[c]}.tif'), bit64_image)
 
@@ -310,39 +337,32 @@ class ImageSet(object):
         file_path = str(file_path)
 
         save_stds = None
-        if isinstance(self.measurand.val, cp.ndarray):
-            save_values = cp.asnumpy(self.measurand.val)
-        elif isinstance(self.measurand.val, np.ndarray):
-            save_values = self.measurand.val.copy
-        else:
-            raise TypeError('ImageSet measurand value has unsupported type.')
-        if self.measurand.std is not None:
-            if isinstance(self.measurand.std, cp.ndarray):
-                save_stds = cp.asnumpy(self.measurand.std)
-            elif isinstance(self.measurand.std, np.ndarray):
-                save_stds = self.measurand.std.copy
-            else:
-                raise TypeError('ImageSet measurand std has unsupported type.')
 
-        bit8_image = save_values
-        max_float = np.amax(bit8_image)
+        if self.measurand.backend == "numpy":
+            tmp_measurand = copy.deepcopy(self.measurand)
+        else:
+            tmp_measurand = measurand_to_numpy(self.measurand)
+
+        val = tmp_measurand.val
+        std = tmp_measurand.std
+
+        max_float = np.amax(val)
 
         if max_float > 1:
-            bit8_image /= max_float
+            val /= max_float
 
-        bit8_image = (np.around(bit8_image * gs.MAX_DN)).astype(np.dtype('uint8'))
-        cv.imwrite(file_path, bit8_image)
+        val = (np.around(val * gs.MAX_DN)).astype(np.dtype('uint8'))
+        cv.imwrite(file_path, val)
 
-        if save_stds is not None:
-            bit8_image = save_stds
+        if std is not None:
             if force_8_bit:
-                max_float = np.amax(bit8_image)
+                max_float = np.amax(std)
                 if max_float > 1:
-                    bit8_image /= max_float
-                bit8_image = (np.around(bit8_image * gs.MAX_DN)).astype(np.dtype('uint8'))
-            cv.imwrite(file_path.removesuffix('.tif') + ' STD.tif', bit8_image)
+                    std /= max_float
+                std = (np.around(std * gs.MAX_DN)).astype(np.dtype('uint8'))
+            cv.imwrite(file_path.removesuffix('.tif') + ' STD.tif', std)
 
-    def calculate_numerical_STD(self, STD_data: Optional[cnp.ndarray] = None):
+    def calculate_numerical_STD(self, STD_data: Optional[ArrayType] = None):
         """
         Calculates an uncertainty estimate for a given acquired image.
         TODO: rewrite to use proper warnings when file not found.
@@ -355,53 +375,29 @@ class ImageSet(object):
         """
         if STD_data is None:
             try:
-                STD_data = rd.read_data_from_txt(gs.STD_FILE_NAME, use_cupy=using_cupy)
+                STD_data = general_functions.read_txt_to_array(gs.STD_FILE_NAME, use_cupy=self._use_cupy)
             except FileNotFoundError:
                 print('Could not load STD data for numerical estimation.')
                 return None
 
-        acq = cnp.around(self.measurand.val * gs.MAX_DN).astype(cnp.dtype('uint8'))
-        STD_image = cnp.zeros_like(acq, dtype=cnp.dtype('float64'))
-        for c in range(gs.NUM_OF_CHS):
-            STD_image[:, :, c] = STD_data[acq[:, :, c], c]
+        numerical_measurand = self.measurand.linearize(ICRF=STD_data)
 
-        return STD_image
+        return numerical_measurand.val
 
-    def bad_pixel_filter(self: 'ImageSet', darkSet: 'ImageSet'):
+    def bad_pixel_filter(self: 'ImageSet', darkSet: 'ImageSet', threshold_value: Optional[float] = gs.DARK_THRESHOLD):
         """
         Replace hot pixels with surrounding median value.
 
         Args:
-            acqSet: ImageSet object of image being corrected.
             darkSet: ImageSet object of dark frame used to map bad pixels.
+            threshold_value: threshold for considering a pixel as a hot pixel.
 
         Returns:
             ImageSet with corrected image.
         """
 
-        def filter_hot_positions(acq, dark, convolve):
-            hot_indices = dark > gs.HOT_PIXEL_THRESHOLD
-            acq[hot_indices] = convolve[hot_indices]
-            return acq
-
-        print(f'Bad pixel filter for image: {self.path} and dark: {darkSet.path}')
-        convolved_image = cp.zeros_like(self.measurand.val, dtype=cp.dtype('float64'))
-        for c in range(gs.NUM_OF_CHS):
-            convolved_image[:, :, c] = median_filter(self.measurand.val[:, :, c],
-                                                     (gs.MEDIAN_FILTER_KERNEL_SIZE, gs.MEDIAN_FILTER_KERNEL_SIZE),
-                                                     mode='reflect')
-
-        acq = filter_hot_positions(self.measurand.val, darkSet.measurand.val, convolved_image)
-
-        if self.measurand.std is not None:
-            for c in range(gs.NUM_OF_CHS):
-                convolved_image[:, :, c] = median_filter(self.measurand.std[:, :, c],
-                                                         (gs.MEDIAN_FILTER_KERNEL_SIZE, gs.MEDIAN_FILTER_KERNEL_SIZE),
-                                                         mode='reflect')
-
-            self.measurand.std = filter_hot_positions(acq, darkSet.measurand.val, convolved_image)
-
-        self.measurand.val = acq
+        new_measurand = self.measurand.filter_larger_than_by_map(darkSet.measurand, threshold_value)
+        return ImageSet(file_path=self.path, measurand=new_measurand)
 
     def flat_field_correction(self: 'ImageSet', flatSet: 'ImageSet'):
         """
@@ -409,67 +405,20 @@ class ImageSet(object):
         an uncertainty image.
 
         Args:
-            imageSet: the acquired image subject to flat-field correction.
             flatSet: the flat-field image used for correction.
 
         Returns:
             The corrected image as an ImageSet object.
         """
 
-        def flat_field_mean(flat_field):
-            """
-            Calculates the mean brightness of an image inside a centered ROI.
-
-            Returns:
-                list of mean image brightness inside ROI for each channel.
-            """
-            flat_field_means = []
-
-            # Define ROI for calculating flat field spatial mean
-            ROI_dx = math.floor(gs.IM_SIZE_X * gs.FF_MID_PERCENTAGE)
-            ROI_dy = math.floor(gs.IM_SIZE_Y * gs.FF_MID_PERCENTAGE)
-            ROI_start_index = (math.floor(1 / gs.FF_MID_PERCENTAGE) - 1) / 2  # Should be an odd number to center on image.
-
-            # Calculate ROI bounds
-            x_start, x_end = ROI_start_index * ROI_dx, (ROI_start_index + 1) * ROI_dx
-            y_start, y_end = ROI_start_index * ROI_dy, (ROI_start_index + 1) * ROI_dy
-
-            # Slice ROI for all channels and compute the mean across spatial dimensions
-            return cnp.mean(flat_field[x_start:x_end, y_start:y_end, :], axis=(0, 1))
-
         if flatSet.measurand.val is None:
             flatSet.load_value_image()
         if flatSet.measurand.std is None:
             flatSet.load_std_image()
 
-        # Determine flat field means
-        flat_field_means = flat_field_mean(flatSet.measurand.val)
-        flat_field_stds = flat_field_mean(flatSet.measurand.std)
+        new_measurand = self.measurand.normalize_by_map(flatSet.measurand)
 
-        # Simplify variable names
-        acq = self.measurand.val
-        flat = flatSet.measurand.val
-        u_acq = self.measurand.std
-        u_ff = flatSet.measurand.std
-
-        # Compute input image uncertainty
-        u_acq_term = (u_acq ** 2) / (flat ** 2)
-        u_acq_term *= flat_field_means ** 2
-
-        # Compute flat field uncertainty
-        u_ff_term = (acq ** 2) / (flat ** 4)
-        u_ff_term *= u_ff ** 2
-        u_ff_term *= flat_field_means ** 2
-
-        # Compute flat field mean uncertainty
-        u_ffm_term = (acq ** 2) / (flat ** 2)
-        u_ffm_term *= flat_field_stds ** 2
-
-        # Update uncertainty with the combined terms
-        self.measurand.std = cnp.sqrt(u_acq_term + u_ff_term + u_ffm_term)
-
-        # Flat field correction (broadcast multiplication for channel-specific scaling)
-        self.measurand.val = (acq / flat) * flat_field_means
+        return ImageSet(file_path=self.path, measurand=new_measurand)
 
     def show_image(self):
         """
@@ -490,8 +439,9 @@ class ImageSet(object):
 
         ratio = short_exposure_set.features["exposure"] / long_exposure_set.features["exposure"]
 
-        absolute_measurand, relative_measurand = Measurand.compute_difference(short_exposure_set.measurand,
-                                                                              long_exposure_set.measurand, ratio)
+        absolute_measurand, relative_measurand = AbstractMeasurand.compute_difference(short_exposure_set.measurand,
+                                                                                      long_exposure_set.measurand,
+                                                                                      ratio)
 
         absolute_set = ImageSet(file_path=short_exposure_set.path, features=short_exposure_set.features,
                                 measurand=absolute_measurand)
@@ -525,7 +475,7 @@ class ImageSet(object):
         if exp > exp1 or exp < exp0:
             raise ValueError('Interpolation point is not between the reference values.')
 
-        new_measurand = Measurand.interpolate(x0, x1, exp0, exp1, exp)
+        new_measurand = AbstractMeasurand.interpolate(x0, x1, exp0, exp1, exp)
 
         return ImageSet(features=short_exposure_set.features, measurand=new_measurand)
 
@@ -598,7 +548,11 @@ def _features_from_file_name(file_path: Path):
     Returns:
         A dictionary containing the features under the given keys.
     """
-    feature_dict = {}
+    feature_dict = {"illumination": "",
+                    "magnification": "",
+                    "exposure": 0.0,
+                    "subject": ""}
+
     file_name_array = file_path.name.removesuffix('.tif').split()
 
     for element in file_name_array:

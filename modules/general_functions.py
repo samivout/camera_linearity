@@ -7,11 +7,8 @@ from scipy.interpolate import interp1d
 import cv2 as cv
 from global_settings import GlobalSettings as gs
 import math
-
-from cupy_wrapper import get_array_libraries
-
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+import numpy as np
+from array_wrapper import ArrayType, get_array_lib, cast_to_array
 
 
 def is_broadcastable(shape1: tuple[int, ...], shape2: tuple[int, ...]):
@@ -27,7 +24,7 @@ def is_broadcastable(shape1: tuple[int, ...], shape2: tuple[int, ...]):
     return True
 
 
-def choose_evenly_spaced_points(array: cnp.ndarray, step_x: int, step_y: Optional[int] = None):
+def choose_evenly_spaced_points(array: ArrayType, step_x: int, step_y: Optional[int] = None):
     """
     Select points evenly in a Numpy array.
     Args:
@@ -97,7 +94,7 @@ def interpolate_data(clean_data_arr: np.ndarray):
     return interpolated_data
 
 
-def map_linearity_limits(lower_limit: Optional[int], upper_limit: Optional[int], ICRF: Optional[cp.ndarray]):
+def map_linearity_limits(lower_limit: Optional[int], upper_limit: Optional[int], ICRF: Optional[ArrayType]):
     """
     Maps the initial non-linear limit values to linear values using the given ICRF.
 
@@ -109,15 +106,17 @@ def map_linearity_limits(lower_limit: Optional[int], upper_limit: Optional[int],
     Returns:
         The mapped lower and upper limits.
     """
+    arr_lib = get_array_lib(ICRF)
+
     if lower_limit is None:
-        lower = cp.array([gs.LOWER_LIN_LIM] * gs.NUM_OF_CHS, dtype="float64")
+        lower = arr_lib.array([gs.LOWER_LIN_LIM] * gs.NUM_OF_CHS, dtype="float64")
     else:
-        lower = cp.array([lower_limit] * gs.NUM_OF_CHS, dtype="float64")
+        lower = arr_lib.array([lower_limit] * gs.NUM_OF_CHS, dtype="float64")
 
     if upper_limit is None:
-        upper = cp.array([gs.UPPER_LIN_LIM] * gs.NUM_OF_CHS, dtype="float64")
+        upper = arr_lib.array([gs.UPPER_LIN_LIM] * gs.NUM_OF_CHS, dtype="float64")
     else:
-        upper = cp.array([gs.MAX_DN - upper_limit] * gs.NUM_OF_CHS, dtype="float64")
+        upper = arr_lib.array([gs.MAX_DN - upper_limit] * gs.NUM_OF_CHS, dtype="float64")
 
     if ICRF is None:
         lower /= gs.MAX_DN
@@ -130,7 +129,7 @@ def map_linearity_limits(lower_limit: Optional[int], upper_limit: Optional[int],
     return lower, upper
 
 
-def weighted_avg_and_std(values, weights):
+def weighted_avg_and_std(values: ArrayType, weights: Optional[ArrayType]):
     """
     Return the weighted average and standard deviation.
 
@@ -139,84 +138,89 @@ def weighted_avg_and_std(values, weights):
 
     values, weights -- NumPy ndarrays with the same shape.
     """
-    if isinstance(values, cnp.ndarray):
-        average = float(cnp.average(values, weights=weights))
-        variance = float(cnp.average((values - average) ** 2, weights=weights))
-    else:
-        average = cnp.average(values, weights=weights)
-        variance = cnp.average((values - average) ** 2, weights=weights)
+    arr_lib = get_array_lib(values)
+
+    average = arr_lib.average(values, weights=weights)
+    variance = arr_lib.average((values - average) ** 2, weights=weights)
 
     return average, math.sqrt(variance)
 
 
-def nanaverage(A: cnp.ndarray, weights: cnp.ndarray, axis: int | tuple[int, ...]):
+def nanaverage(values: ArrayType, weights: ArrayType, axis: int | tuple[int, ...]):
     """
     Calculate the weighted average along the specified axis, ignoring NaN values in both A and weights.
 
     Args:
-        A: CuPy array, input values.
-        weights: CuPy array, weights corresponding to the values in A.
+        values: NumPy or CuPy array, input values.
+        weights: NumPy or CuPy array, matching type of values. Weights corresponding to the values in A.
         axis: The axis along which the weighted average is computed.
 
     Returns:
         Weighted average along the specified axis, ignoring NaN values.
     """
+    arr_lib = get_array_lib(values)
+
     # Mask NaN values in both A and weights
-    valid_mask = ~cnp.isnan(A) & ~cnp.isnan(weights)
+    valid_mask = ~arr_lib.isnan(values) & ~arr_lib.isnan(weights)
 
     # Calculate the weighted sum of valid elements
-    weighted_sum = cnp.nansum(A * weights * valid_mask, axis=axis)
+    weighted_sum = arr_lib.nansum(values * weights * valid_mask, axis=axis)
 
     # Calculate the sum of the valid weights
-    valid_weights_sum = cnp.nansum(valid_mask * weights, axis=axis)
+    valid_weights_sum = arr_lib.nansum(valid_mask * weights, axis=axis)
 
     # Avoid division by zero by checking if valid_weights_sum is zero
     result = weighted_sum / valid_weights_sum
-    result[valid_weights_sum == 0] = cnp.nan  # Set to NaN where there are no valid weights
+    result[valid_weights_sum == 0] = arr_lib.nan  # Set to NaN where there are no valid weights
 
     return result
 
 
-def weighted_percentile(a: cp.ndarray, q: Optional[cp.ndarray] = cp.array([75, 25]), w: Optional[cp.ndarray] = None):
+def weighted_percentile(values: ArrayType, percentiles: Optional[ArrayType] = None,
+                        weights: Optional[ArrayType] = None):
     """
     Calculates percentiles associated with a (possibly weighted) array.
     Args:
-        a: The input array from which to calculate percents.
-        q: The percentiles to calculate (0.0 - 100.0).
-        w: The weights to assign to values of a. Equal weighting if None is specified.
+        values: The input array from which to calculate percents.
+        percentiles: The percentiles to calculate (0.0 - 100.0).
+        weights: The weights to assign to values array. Equal weighting if None is specified.
 
     Returns:
         The values associated with the specified percentiles.
     """
+    arr_lib = get_array_lib(values)
+    if percentiles is None:
+        percentiles = arr_lib.array([75, 25])
+
     # Standardize and sort based on values in a
-    q = cp.array(q) / 100.0
-    if w is None:
-        w = cp.ones(a.size)
-    idx = cp.argsort(a)
-    a_sort = a[idx]
-    w_sort = w[idx]
+    percentiles = arr_lib.array(percentiles) / 100.0
+    if weights is None:
+        weights = arr_lib.ones(values.size)
+    idx = arr_lib.argsort(values)
+    a_sort = values[idx]
+    w_sort = weights[idx]
 
     # Get the cumulative sum of weights
-    ecdf = cp.cumsum(w_sort)
+    ecdf = arr_lib.cumsum(w_sort)
 
     # Find the percentile index positions associated with the percentiles
-    p = q * (w.sum() - 1)
+    p = percentiles * (weights.sum() - 1)
 
     # Find the bounding indices (both low and high)
-    idx_low = cp.searchsorted(ecdf, p, side='right')
-    idx_high = cp.searchsorted(ecdf, p + 1, side='right')
+    idx_low = arr_lib.searchsorted(ecdf, p, side='right')
+    idx_high = arr_lib.searchsorted(ecdf, p + 1, side='right')
     idx_high[idx_high > ecdf.size - 1] = ecdf.size - 1
 
     # Calculate the weights
-    weights_high = p - cp.floor(p)
+    weights_high = p - arr_lib.floor(p)
     weights_low = 1.0 - weights_high
 
     # Extract the low/high indexes and multiply by the corresponding weights
-    x1 = cp.take(a_sort, idx_low) * weights_low
-    x2 = cp.take(a_sort, idx_high) * weights_high
+    x1 = arr_lib.take(a_sort, idx_low) * weights_low
+    x2 = arr_lib.take(a_sort, idx_high) * weights_high
 
     # Return the average
-    return cp.add(x1, x2)
+    return arr_lib.add(x1, x2)
 
 
 def video_frame_generator(video_path: Path):
@@ -245,6 +249,57 @@ def video_frame_generator(video_path: Path):
 
     finally:
         video.release()
+
+
+def read_ICRF_file(file_path: Path, return_derivative: Optional[bool] = True, use_cupy: Optional[bool] = False):
+    """
+    Utility function to read ICRF files into memory.
+    Args:
+        file_path: absolute path to the ICRF file.
+        return_derivative: whether to return the derivative along with the main ICRF value array.
+        use_cupy: whether to return a CuPy or NumPy array.
+    Returns:
+        Tuple, with first element containing the ICRF array, and second containing None or the derivative.
+    """
+    ICRF = np.loadtxt(file_path, dtype=float)
+    if not return_derivative:
+        ICRF = cast_to_array(ICRF, use_cupy=use_cupy)
+        return ICRF, None
+
+    ICRF_diff = np.zeros_like(ICRF)
+    dx = 2 / (gs.BITS - 1)
+    for c in range(gs.NUM_OF_CHS):
+        ICRF_diff[:, c] = np.gradient(ICRF[:, c], dx)
+
+    ICRF = cast_to_array(ICRF, use_cupy=use_cupy)
+    ICRF_diff = cast_to_array(ICRF, use_cupy=use_cupy)
+
+    return ICRF, ICRF_diff
+
+
+def read_txt_to_array(file_name: str, path: Optional[str] = None, use_cupy: Optional[bool] = True):
+    """
+    Load numerical data from a .txt file of given name. Defaults to data
+    directory but optionally can use other paths.
+
+    Args:
+        file_name: name of the file to load.
+        path: path to the file, optional.
+        use_cupy: whether to load data into a CuPy or NumPy array.
+
+    Returns: numpy array of the txt file.
+    """
+    if path is None:
+        load_path = gs.DATA_PATH
+    else:
+        load_path = Path(path)
+
+    data_array = np.loadtxt(load_path.joinpath(file_name), dtype=float)
+
+    if use_cupy:
+        data_array = cast_to_array(data_array, use_cupy=use_cupy)
+
+    return data_array
 
 
 if __name__ == "__main__":
