@@ -5,11 +5,10 @@ functions (DoRF).
 from pathlib import Path
 from typing import Optional
 from sklearn.decomposition import PCA
+
+import general_functions
 from global_settings import GlobalSettings as gs
-from cupy_wrapper import get_array_libraries
-import read_data as rd
-np, cp, using_cupy = get_array_libraries()
-cnp = cp if using_cupy else np
+import numpy as np
 
 
 def _read_dorf_data(file_path: Path, include_gamma: bool, color_split: bool):
@@ -194,13 +193,12 @@ def analyze_principal_components():
     for i in range(len(gs.ICRF_FILES)):
         file_name = gs.ICRF_FILES[i]
         mean_file_name = gs.MEAN_ICRF_FILES[i]
-        ICRF_array = rd.read_txt_to_array(file_name, use_cupy=True)
-        mean_ICRF_array = rd.read_txt_to_array(mean_file_name, use_cupy=True)
+        ICRF_array = general_functions.read_txt_to_array(file_name, use_cupy=False)
+        mean_ICRF_array = general_functions.read_txt_to_array(mean_file_name, use_cupy=False)
 
         covariance_matrix = _calculate_covariance_matrix(ICRF_array,
                                                          mean_ICRF_array)
 
-        covariance_matrix = cp.asnumpy(covariance_matrix)
         PCA_array = _calculate_principal_components(covariance_matrix)
 
         np.savetxt(gs.DATA_PATH.joinpath(gs.PCA_FILES[i]), PCA_array)
